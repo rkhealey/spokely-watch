@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+model Job {
+  id               String    @id @default(cuid())
+  externalId       String    @unique
+  status           JobStatus
+  audioDurationSec Float?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  processingMs     Int?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  runpodUsage    RunpodUsage?
+  anthropicUsage AnthropicUsage[]
+  error          JobError?
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model RunpodUsage {
+  id          String  @id @default(cuid())
+  jobId       String  @unique
+  job         Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  endpointId  String?
+  gpuType     String
+  executionMs Int
+  delayMs     Int
+  costUsd     Decimal @db.Decimal(10, 4)
+}
+
+model AnthropicUsage {
+  id                  String   @id @default(cuid())
+  jobId               String
+  job                 Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  model               String
+  inputTokens         Int
+  outputTokens        Int
+  cacheCreationTokens Int      @default(0)
+  cacheReadTokens     Int      @default(0)
+  costUsd             Decimal  @db.Decimal(10, 4)
+  createdAt           DateTime @default(now())
+
+  @@index([jobId])
+}
+
+model JobError {
+  id        String   @id @default(cuid())
+  jobId     String   @unique
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  code      String?
+  message   String
+  stage     String?
+  createdAt DateTime @default(now())
+}
