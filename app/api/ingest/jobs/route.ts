@@ -7,7 +7,10 @@ const isoDateString = z.string().refine((value) => !Number.isNaN(Date.parse(valu
   message: "Must be a valid ISO 8601 date string",
 });
 
-const runpodSchema = z.object({
+const runpodUsageSchema = z.object({
+  // Which container this run was, e.g. "transcribe" / "diarize" — a job can
+  // have multiple RunPod containers running in parallel on the same episode.
+  task: z.string().optional(),
   endpointId: z.string().optional(),
   gpuType: z.string(),
   executionMs: z.number().int().nonnegative(),
@@ -35,7 +38,7 @@ const jobIngestSchema = z
     audioDurationSec: z.number().nonnegative().optional(),
     startedAt: isoDateString.optional(),
     completedAt: isoDateString.optional(),
-    runpod: runpodSchema.optional(),
+    runpod: z.array(runpodUsageSchema).optional(),
     anthropic: z.array(anthropicUsageSchema).optional(),
     error: errorSchema.optional(),
   })
@@ -65,14 +68,17 @@ export async function POST(request: NextRequest) {
   const { externalId, status, audioDurationSec, startedAt, completedAt, runpod, anthropic, error } =
     parsed.data;
 
-  let runpodCostUsd: number | null = null;
+  const runpodWithCost: Array<z.infer<typeof runpodUsageSchema> & { costUsd: number }> = [];
   const anthropicWithCost: Array<
     z.infer<typeof anthropicUsageSchema> & { costUsd: number }
   > = [];
 
   try {
-    if (runpod) {
-      runpodCostUsd = computeRunpodCostUsd(runpod.gpuType, runpod.executionMs);
+    for (const usage of runpod ?? []) {
+      runpodWithCost.push({
+        ...usage,
+        costUsd: computeRunpodCostUsd(usage.gpuType, usage.executionMs),
+      });
     }
     for (const usage of anthropic ?? []) {
       anthropicWithCost.push({ ...usage, costUsd: computeAnthropicCostUsd(usage.model, usage) });
@@ -100,16 +106,17 @@ export async function POST(request: NextRequest) {
     await tx.anthropicUsage.deleteMany({ where: { jobId: job.id } });
     await tx.runpodUsage.deleteMany({ where: { jobId: job.id } });
 
-    if (runpod && runpodCostUsd !== null) {
-      await tx.runpodUsage.create({
-        data: {
+    if (runpodWithCost.length > 0) {
+      await tx.runpodUsage.createMany({
+        data: runpodWithCost.map((usage) => ({
           jobId: job.id,
-          endpointId: runpod.endpointId,
-          gpuType: runpod.gpuType,
-          executionMs: runpod.executionMs,
-          delayMs: runpod.delayMs,
-          costUsd: runpodCostUsd,
-        },
+          task: usage.task,
+          endpointId: usage.endpointId,
+          gpuType: usage.gpuType,
+          executionMs: usage.executionMs,
+          delayMs: usage.delayMs,
+          costUsd: usage.costUsd,
+        })),
       });
     }
 

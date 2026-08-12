@@ -4,10 +4,11 @@
  * ingestion time so pricing only needs to be kept up to date in one place.
  */
 
+// Keys must match the `gpuType` string the NestJS pipeline sends in the
+// ingestion payload — that in turn should match RunPod's endpoint config
+// (Console → Serverless → your endpoint → Edit Endpoint → GPU selection).
 export const RUNPOD_GPU_RATE_PER_HOUR: Record<string, number> = {
-  A100_80GB: 1.99,
-  A40: 0.79,
-  L40S: 1.14,
+  "24GB": 0.69,
 };
 
 export const ANTHROPIC_RATE_PER_MTOK: Record<

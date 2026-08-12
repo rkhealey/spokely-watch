@@ -5,11 +5,10 @@ import { PrismaClient, JobStatus } from "@prisma/client";
 
 const db = new PrismaClient();
 
-const GPU_TYPES = ["A100_80GB", "A40", "L40S"] as const;
+// Keep in sync with lib/pricing.ts (RUNPOD_GPU_RATE_PER_HOUR).
+const GPU_TYPES = ["24GB"] as const;
 const GPU_RATE_PER_HOUR: Record<(typeof GPU_TYPES)[number], number> = {
-  A100_80GB: 1.99,
-  A40: 0.79,
-  L40S: 1.14,
+  "24GB": 0.69,
 };
 
 const ANTHROPIC_MODELS = ["claude-sonnet-5", "claude-opus-5"] as const;
@@ -93,12 +92,15 @@ async function main() {
             // Failures upstream of RunPod/Anthropic don't always carry usage data.
             ...(err.stage !== "runpod" && {
               runpodUsage: {
-                create: {
-                  gpuType: pick(GPU_TYPES),
-                  executionMs: randInt(500, 5000),
-                  delayMs: randInt(100, 1500),
-                  costUsd: round(randFloat(0.001, 0.01)),
-                },
+                create: [
+                  {
+                    task: "transcribe",
+                    gpuType: pick(GPU_TYPES),
+                    executionMs: randInt(500, 5000),
+                    delayMs: randInt(100, 1500),
+                    costUsd: round(randFloat(0.001, 0.01)),
+                  },
+                ],
               },
             }),
           },
@@ -107,10 +109,17 @@ async function main() {
         continue;
       }
 
+      // Transcribe and diarize run as two parallel RunPod containers on the
+      // same episode, so wall-clock time is bounded by whichever finishes
+      // last, not their sum — but both incur their own cost.
       const gpuType = pick(GPU_TYPES);
-      const executionMs = Math.round(audioDurationSec * randFloat(150, 400));
-      const delayMs = randInt(100, 2000);
-      const runpodCost = round((executionMs / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]);
+      const transcribeExecutionMs = Math.round(audioDurationSec * randFloat(150, 400));
+      const transcribeDelayMs = randInt(100, 2000);
+      const transcribeCost = round((transcribeExecutionMs / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]);
+
+      const diarizeExecutionMs = Math.round(audioDurationSec * randFloat(80, 200));
+      const diarizeDelayMs = randInt(100, 2000);
+      const diarizeCost = round((diarizeExecutionMs / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]);
 
       const model = pick(ANTHROPIC_MODELS);
       const inputTokens = Math.round(audioDurationSec * randFloat(15, 30));
@@ -123,7 +132,11 @@ async function main() {
           (cacheReadTokens / 1_000_000) * (rates.input * 0.1)
       );
 
-      const processingMs = delayMs + executionMs + randInt(500, 4000);
+      const parallelMs = Math.max(
+        transcribeDelayMs + transcribeExecutionMs,
+        diarizeDelayMs + diarizeExecutionMs
+      );
+      const processingMs = parallelMs + randInt(500, 4000);
       const completedAt = new Date(startedAt.getTime() + processingMs);
 
       await db.job.create({
@@ -136,7 +149,24 @@ async function main() {
           processingMs,
           createdAt: startedAt,
           runpodUsage: {
-            create: { endpointId: "ep_transcribe_v1", gpuType, executionMs, delayMs, costUsd: runpodCost },
+            create: [
+              {
+                task: "transcribe",
+                endpointId: "ep_transcribe_v1",
+                gpuType,
+                executionMs: transcribeExecutionMs,
+                delayMs: transcribeDelayMs,
+                costUsd: transcribeCost,
+              },
+              {
+                task: "diarize",
+                endpointId: "ep_diarize_v1",
+                gpuType,
+                executionMs: diarizeExecutionMs,
+                delayMs: diarizeDelayMs,
+                costUsd: diarizeCost,
+              },
+            ],
           },
           anthropicUsage: {
             create: {

@@ -25,7 +25,7 @@ model Job {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  runpodUsage    RunpodUsage?
+  runpodUsage    RunpodUsage[]
   anthropicUsage AnthropicUsage[]
   error          JobError?
 
@@ -34,14 +34,20 @@ model Job {
 }
 
 model RunpodUsage {
-  id          String  @id @default(cuid())
-  jobId       String  @unique
-  job         Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  // Which container this run was, e.g. "transcribe" / "diarize" — a job can
+  // have multiple RunPod containers running in parallel on the same episode.
+  task        String?
   endpointId  String?
   gpuType     String
   executionMs Int
   delayMs     Int
-  costUsd     Decimal @db.Decimal(10, 4)
+  costUsd     Decimal  @db.Decimal(10, 4)
+  createdAt   DateTime @default(now())
+
+  @@index([jobId])
 }
 
 model AnthropicUsage {

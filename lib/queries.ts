@@ -32,6 +32,14 @@ function round1(value: number) {
   return Math.round(value * 10) / 10;
 }
 
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function sumCost(usages: ReadonlyArray<{ costUsd: { toNumber(): number } }>) {
+  return usages.reduce((sum, u) => sum + u.costUsd.toNumber(), 0);
+}
+
 export async function getOverviewStats() {
   const since = windowStart();
 
@@ -68,7 +76,7 @@ export async function getOverviewStats() {
 export async function getCostStats() {
   const since = windowStart();
 
-  const [runpodAgg, anthropicAgg, succeededJobs] = await Promise.all([
+  const [runpodAgg, anthropicAgg, succeededJobs, audioAgg] = await Promise.all([
     db.runpodUsage.aggregate({
       where: { job: { createdAt: { gte: since } } },
       _sum: { costUsd: true },
@@ -78,17 +86,25 @@ export async function getCostStats() {
       _sum: { costUsd: true },
     }),
     db.job.count({ where: { createdAt: { gte: since }, status: "SUCCEEDED" } }),
+    db.job.aggregate({
+      where: { createdAt: { gte: since }, status: "SUCCEEDED" },
+      _sum: { audioDurationSec: true },
+    }),
   ]);
 
   const runpodCostUsd = runpodAgg._sum.costUsd?.toNumber() ?? 0;
   const anthropicCostUsd = anthropicAgg._sum.costUsd?.toNumber() ?? 0;
   const totalCostUsd = runpodCostUsd + anthropicCostUsd;
+  const totalAudioHours = (audioAgg._sum.audioDurationSec ?? 0) / 3600;
 
   return {
     totalCostUsd,
     runpodCostUsd,
     anthropicCostUsd,
     avgCostPerJob: succeededJobs > 0 ? totalCostUsd / succeededJobs : 0,
+    // All incurred spend (including partial cost on failed jobs) against
+    // hours of audio actually delivered — the "what does an hour cost us" number.
+    costPerAudioHour: totalAudioHours > 0 ? totalCostUsd / totalAudioHours : 0,
   };
 }
 
@@ -189,8 +205,7 @@ export async function getRecentJobs(limit = 50) {
   });
 
   return jobs.map((job) => {
-    const runpodCostUsd = job.runpodUsage?.costUsd.toNumber() ?? 0;
-    const anthropicCostUsd = job.anthropicUsage.reduce((sum, u) => sum + u.costUsd.toNumber(), 0);
+    const costUsd = sumCost(job.runpodUsage) + sumCost(job.anthropicUsage);
 
     return {
       externalId: job.externalId,
@@ -198,7 +213,7 @@ export async function getRecentJobs(limit = 50) {
       createdAt: job.createdAt,
       audioDurationSec: job.audioDurationSec,
       processingMs: job.processingMs,
-      costUsd: runpodCostUsd + anthropicCostUsd,
+      costUsd,
     };
   });
 }
@@ -210,8 +225,8 @@ export async function getJobDetail(externalId: string) {
   });
   if (!job) return null;
 
-  const runpodCostUsd = job.runpodUsage?.costUsd.toNumber() ?? 0;
-  const anthropicCostUsd = job.anthropicUsage.reduce((sum, u) => sum + u.costUsd.toNumber(), 0);
+  const runpodCostUsd = sumCost(job.runpodUsage);
+  const anthropicCostUsd = sumCost(job.anthropicUsage);
   const processingSec = job.processingMs != null ? job.processingMs / 1000 : null;
   const realtimeMultiple =
     processingSec && processingSec > 0 && job.audioDurationSec
@@ -230,10 +245,101 @@ export async function getJobDetail(externalId: string) {
     runpodCostUsd,
     anthropicCostUsd,
     totalCostUsd: runpodCostUsd + anthropicCostUsd,
-    runpodUsage: job.runpodUsage
-      ? { ...job.runpodUsage, costUsd: job.runpodUsage.costUsd.toNumber() }
-      : null,
+    runpodUsage: job.runpodUsage.map((u) => ({ ...u, costUsd: u.costUsd.toNumber() })),
     anthropicUsage: job.anthropicUsage.map((u) => ({ ...u, costUsd: u.costUsd.toNumber() })),
     error: job.error,
   };
+}
+
+// Cost bucketed by day and split by vendor. Not filtered by status — a
+// failed job can still have incurred real RunPod/Anthropic spend.
+export async function getCostPerDay(days = DEFAULT_WINDOW_DAYS) {
+  const since = windowStart(days);
+  const jobs = await db.job.findMany({
+    where: { createdAt: { gte: since } },
+    select: {
+      createdAt: true,
+      runpodUsage: { select: { costUsd: true } },
+      anthropicUsage: { select: { costUsd: true } },
+    },
+  });
+
+  const buckets = buildDayBuckets(days, () => ({ runpod: 0, anthropic: 0 }));
+  for (const job of jobs) {
+    const bucket = buckets.get(dayKey(job.createdAt));
+    if (!bucket) continue;
+    bucket.runpod += sumCost(job.runpodUsage);
+    bucket.anthropic += sumCost(job.anthropicUsage);
+  }
+
+  return Array.from(buckets, ([date, value]) => ({
+    date,
+    runpodCostUsd: round2(value.runpod),
+    anthropicCostUsd: round2(value.anthropic),
+  }));
+}
+
+// Unit cost per day: total spend / hours of audio delivered that day.
+// Aggregate ratio (sum/sum) for the same reason as the speed chart — an
+// average of per-job ratios would be skewed by very short jobs.
+export async function getCostPerAudioHourPerDay(days = DEFAULT_WINDOW_DAYS) {
+  const since = windowStart(days);
+  const jobs = await db.job.findMany({
+    where: { createdAt: { gte: since } },
+    select: {
+      createdAt: true,
+      audioDurationSec: true,
+      runpodUsage: { select: { costUsd: true } },
+      anthropicUsage: { select: { costUsd: true } },
+    },
+  });
+
+  const buckets = buildDayBuckets(days, () => ({ cost: 0, audioSec: 0 }));
+  for (const job of jobs) {
+    const bucket = buckets.get(dayKey(job.createdAt));
+    if (!bucket) continue;
+    const jobCost = sumCost(job.runpodUsage) + sumCost(job.anthropicUsage);
+    bucket.cost += jobCost;
+    bucket.audioSec += job.audioDurationSec ?? 0;
+  }
+
+  return Array.from(buckets, ([date, value]) => ({
+    date,
+    costPerAudioHour: value.audioSec > 0 ? round2(value.cost / (value.audioSec / 3600)) : 0,
+  }));
+}
+
+export async function getTopJobsByCost(limit = 10, days = DEFAULT_WINDOW_DAYS) {
+  const since = windowStart(days);
+  const jobs = await db.job.findMany({
+    where: { createdAt: { gte: since } },
+    include: { runpodUsage: true, anthropicUsage: true },
+  });
+
+  return jobs
+    .map((job) => ({
+      externalId: job.externalId,
+      status: job.status,
+      createdAt: job.createdAt,
+      costUsd: sumCost(job.runpodUsage) + sumCost(job.anthropicUsage),
+    }))
+    .sort((a, b) => b.costUsd - a.costUsd)
+    .slice(0, limit);
+}
+
+export async function getRecentFailedJobs(limit = 20) {
+  const jobs = await db.job.findMany({
+    where: { status: "FAILED" },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { error: true },
+  });
+
+  return jobs.map((job) => ({
+    externalId: job.externalId,
+    createdAt: job.createdAt,
+    stage: job.error?.stage ?? null,
+    code: job.error?.code ?? null,
+    message: job.error?.message ?? "Unknown error",
+  }));
 }

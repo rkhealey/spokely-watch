@@ -64,25 +64,31 @@ export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
           <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">RunPod</h2>
-          {job.runpodUsage ? (
-            <dl className="mt-3 grid grid-cols-2 gap-y-2 text-sm">
-              <dt className="text-zinc-500 dark:text-zinc-400">GPU type</dt>
-              <dd className="text-right text-zinc-900 dark:text-zinc-50">
-                {job.runpodUsage.gpuType}
-              </dd>
-              <dt className="text-zinc-500 dark:text-zinc-400">Execution time</dt>
-              <dd className="text-right text-zinc-900 dark:text-zinc-50">
-                {formatDuration(job.runpodUsage.executionMs / 1000)}
-              </dd>
-              <dt className="text-zinc-500 dark:text-zinc-400">Queue delay</dt>
-              <dd className="text-right text-zinc-900 dark:text-zinc-50">
-                {formatDuration(job.runpodUsage.delayMs / 1000)}
-              </dd>
-              <dt className="text-zinc-500 dark:text-zinc-400">Cost</dt>
-              <dd className="text-right text-zinc-900 dark:text-zinc-50">
-                {formatCost(job.runpodCostUsd)}
-              </dd>
-            </dl>
+          {job.runpodUsage.length > 0 ? (
+            <table className="mt-3 w-full text-sm">
+              <thead>
+                <tr className="text-left text-zinc-500 dark:text-zinc-400">
+                  <th className="pb-1 font-medium">Task</th>
+                  <th className="pb-1 font-medium">GPU</th>
+                  <th className="pb-1 font-medium">Execution</th>
+                  <th className="pb-1 text-right font-medium">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {job.runpodUsage.map((usage) => (
+                  <tr key={usage.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                    <td className="py-1.5 text-zinc-900 dark:text-zinc-50">{usage.task ?? "—"}</td>
+                    <td className="py-1.5 text-zinc-600 dark:text-zinc-400">{usage.gpuType}</td>
+                    <td className="py-1.5 text-zinc-600 dark:text-zinc-400">
+                      {formatDuration(usage.executionMs / 1000)}
+                    </td>
+                    <td className="py-1.5 text-right text-zinc-900 dark:text-zinc-50">
+                      {formatCost(usage.costUsd)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           ) : (
             <p className="mt-3 text-sm text-zinc-400 dark:text-zinc-600">No RunPod usage recorded.</p>
           )}
