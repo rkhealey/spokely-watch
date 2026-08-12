@@ -36,6 +36,10 @@ function round2(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function round4(value: number) {
+  return Math.round(value * 10000) / 10000;
+}
+
 function sumCost(usages: ReadonlyArray<{ costUsd: { toNumber(): number } }>) {
   return usages.reduce((sum, u) => sum + u.costUsd.toNumber(), 0);
 }
@@ -233,6 +237,20 @@ export async function getJobDetail(externalId: string) {
       ? job.audioDurationSec / processingSec
       : null;
 
+  // Cold-start cost is derived proportionally from the stored costUsd
+  // (delayMs / total billed ms) rather than recomputed from the current
+  // pricing table, so the breakdown always sums to what was actually
+  // charged even if rates change after the job was ingested.
+  const runpodUsageWithColdStart = job.runpodUsage.map((u) => {
+    const costUsd = u.costUsd.toNumber();
+    const billedMs = u.executionMs + u.delayMs;
+    const coldStartCostUsd = billedMs > 0 ? round4(costUsd * (u.delayMs / billedMs)) : 0;
+    return { ...u, costUsd, coldStartCostUsd };
+  });
+  const coldStartCostUsd = round4(
+    runpodUsageWithColdStart.reduce((sum, u) => sum + u.coldStartCostUsd, 0)
+  );
+
   return {
     externalId: job.externalId,
     status: job.status,
@@ -245,7 +263,8 @@ export async function getJobDetail(externalId: string) {
     runpodCostUsd,
     anthropicCostUsd,
     totalCostUsd: runpodCostUsd + anthropicCostUsd,
-    runpodUsage: job.runpodUsage.map((u) => ({ ...u, costUsd: u.costUsd.toNumber() })),
+    coldStartCostUsd,
+    runpodUsage: runpodUsageWithColdStart,
     anthropicUsage: job.anthropicUsage.map((u) => ({ ...u, costUsd: u.costUsd.toNumber() })),
     error: job.error,
   };

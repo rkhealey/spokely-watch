@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
     for (const usage of runpod ?? []) {
       runpodWithCost.push({
         ...usage,
-        costUsd: computeRunpodCostUsd(usage.gpuType, usage.executionMs),
+        costUsd: computeRunpodCostUsd(usage.gpuType, usage.executionMs + usage.delayMs),
       });
     }
     for (const usage of anthropic ?? []) {

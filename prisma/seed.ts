@@ -113,13 +113,19 @@ async function main() {
       // same episode, so wall-clock time is bounded by whichever finishes
       // last, not their sum — but both incur their own cost.
       const gpuType = pick(GPU_TYPES);
+      // Billed on execution + delay together — RunPod charges for cold-start
+      // time too (see lib/pricing.ts computeRunpodCostUsd).
       const transcribeExecutionMs = Math.round(audioDurationSec * randFloat(150, 400));
       const transcribeDelayMs = randInt(100, 2000);
-      const transcribeCost = round((transcribeExecutionMs / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]);
+      const transcribeCost = round(
+        ((transcribeExecutionMs + transcribeDelayMs) / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]
+      );
 
       const diarizeExecutionMs = Math.round(audioDurationSec * randFloat(80, 200));
       const diarizeDelayMs = randInt(100, 2000);
-      const diarizeCost = round((diarizeExecutionMs / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]);
+      const diarizeCost = round(
+        ((diarizeExecutionMs + diarizeDelayMs) / 3_600_000) * GPU_RATE_PER_HOUR[gpuType]
+      );
 
       const model = pick(ANTHROPIC_MODELS);
       const inputTokens = Math.round(audioDurationSec * randFloat(15, 30));

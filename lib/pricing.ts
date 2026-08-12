@@ -27,12 +27,17 @@ function round(value: number, decimals = 4) {
 
 export class UnknownPricingKeyError extends Error {}
 
-export function computeRunpodCostUsd(gpuType: string, executionMs: number): number {
+// Bill on execution + delay together, not execution alone. RunPod's
+// recommended pattern loads models outside the handler function, which
+// makes that cold-start time show up as delayMs in the job stats — but
+// RunPod still bills it at the same per-second rate as execution. Billing
+// on executionMs alone silently undercounts every cold start.
+export function computeRunpodCostUsd(gpuType: string, billedMs: number): number {
   const ratePerHour = RUNPOD_GPU_RATE_PER_HOUR[gpuType];
   if (ratePerHour === undefined) {
     throw new UnknownPricingKeyError(`Unknown RunPod GPU type: "${gpuType}"`);
   }
-  return round((executionMs / 3_600_000) * ratePerHour);
+  return round((billedMs / 3_600_000) * ratePerHour);
 }
 
 export function computeAnthropicCostUsd(
