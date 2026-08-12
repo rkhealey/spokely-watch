@@ -12,10 +12,34 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Chart roles — see the dataviz skill's reference palette. Single source for
+   every chart component; swap values here to re-theme all charts at once. */
+:root {
+  --chart-surface: #fcfcfb;
+  --chart-blue: #2a78d6;
+  --chart-blue-wash: color-mix(in oklab, var(--chart-blue) 10%, transparent);
+  --chart-good: #0ca30c;
+  --chart-critical: #d03b3b;
+  --chart-grid: #e1e0d9;
+  --chart-axis: #c3c2b7;
+  --chart-text-secondary: #52514e;
+  --chart-text-muted: #898781;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    --chart-surface: #1a1a19;
+    --chart-blue: #3987e5;
+    --chart-blue-wash: color-mix(in oklab, var(--chart-blue) 10%, transparent);
+    --chart-good: #0ca30c;
+    --chart-critical: #e66767;
+    --chart-grid: #2c2c2a;
+    --chart-axis: #383835;
+    --chart-text-secondary: #c3c2b7;
+    --chart-text-muted: #898781;
   }
 }
 

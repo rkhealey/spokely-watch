@@ -1,0 +1,129 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { StatCard } from "@/components/ui/stat-card";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { getJobDetail } from "@/lib/queries";
+import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
+
+export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]">) {
+  const { externalId } = await props.params;
+  const job = await getJobDetail(externalId);
+
+  if (!job) notFound();
+
+  return (
+    <div>
+      <Link
+        href="/jobs"
+        className="text-sm text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+      >
+        ← All jobs
+      </Link>
+
+      <div className="mt-3 flex items-center gap-3">
+        <h1 className="font-mono text-base font-semibold text-zinc-900 dark:text-zinc-50">
+          {job.externalId}
+        </h1>
+        <StatusBadge status={job.status} />
+      </div>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        {formatDateTime(job.createdAt)}
+      </p>
+
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="Audio duration"
+          value={job.audioDurationSec != null ? formatDuration(job.audioDurationSec) : "—"}
+        />
+        <StatCard
+          label="Processing time"
+          value={job.processingMs != null ? formatDuration(job.processingMs / 1000) : "—"}
+        />
+        <StatCard
+          label="Speed"
+          value={job.realtimeMultiple != null ? `${job.realtimeMultiple.toFixed(1)}x` : "—"}
+          hint="realtime"
+        />
+        <StatCard label="Total cost" value={formatCost(job.totalCostUsd)} />
+      </div>
+
+      {job.error && (
+        <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-5 dark:border-red-900/50 dark:bg-red-950/30">
+          <h2 className="text-sm font-semibold text-red-900 dark:text-red-200">
+            Failed{job.error.stage ? ` — ${job.error.stage}` : ""}
+          </h2>
+          <p className="mt-1 text-sm text-red-800 dark:text-red-300">{job.error.message}</p>
+          {job.error.code && (
+            <p className="mt-1 font-mono text-xs text-red-600 dark:text-red-400">
+              {job.error.code}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">RunPod</h2>
+          {job.runpodUsage ? (
+            <dl className="mt-3 grid grid-cols-2 gap-y-2 text-sm">
+              <dt className="text-zinc-500 dark:text-zinc-400">GPU type</dt>
+              <dd className="text-right text-zinc-900 dark:text-zinc-50">
+                {job.runpodUsage.gpuType}
+              </dd>
+              <dt className="text-zinc-500 dark:text-zinc-400">Execution time</dt>
+              <dd className="text-right text-zinc-900 dark:text-zinc-50">
+                {formatDuration(job.runpodUsage.executionMs / 1000)}
+              </dd>
+              <dt className="text-zinc-500 dark:text-zinc-400">Queue delay</dt>
+              <dd className="text-right text-zinc-900 dark:text-zinc-50">
+                {formatDuration(job.runpodUsage.delayMs / 1000)}
+              </dd>
+              <dt className="text-zinc-500 dark:text-zinc-400">Cost</dt>
+              <dd className="text-right text-zinc-900 dark:text-zinc-50">
+                {formatCost(job.runpodCostUsd)}
+              </dd>
+            </dl>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-400 dark:text-zinc-600">No RunPod usage recorded.</p>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Anthropic</h2>
+          {job.anthropicUsage.length > 0 ? (
+            <table className="mt-3 w-full text-sm">
+              <thead>
+                <tr className="text-left text-zinc-500 dark:text-zinc-400">
+                  <th className="pb-1 font-medium">Model</th>
+                  <th className="pb-1 font-medium">In</th>
+                  <th className="pb-1 font-medium">Out</th>
+                  <th className="pb-1 text-right font-medium">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {job.anthropicUsage.map((usage) => (
+                  <tr key={usage.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                    <td className="py-1.5 text-zinc-900 dark:text-zinc-50">{usage.model}</td>
+                    <td className="py-1.5 text-zinc-600 dark:text-zinc-400">
+                      {usage.inputTokens.toLocaleString()}
+                    </td>
+                    <td className="py-1.5 text-zinc-600 dark:text-zinc-400">
+                      {usage.outputTokens.toLocaleString()}
+                    </td>
+                    <td className="py-1.5 text-right text-zinc-900 dark:text-zinc-50">
+                      {formatCost(usage.costUsd)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-400 dark:text-zinc-600">
+              No Anthropic usage recorded.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

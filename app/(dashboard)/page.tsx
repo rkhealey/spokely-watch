@@ -1,8 +1,17 @@
 import { StatCard } from "@/components/ui/stat-card";
-import { getOverviewStats } from "@/lib/queries";
+import { ChartCard } from "@/components/ui/chart-card";
+import { JobsChart } from "@/components/charts/jobs-chart";
+import { AudioHoursChart } from "@/components/charts/audio-hours-chart";
+import { SpeedChart } from "@/components/charts/speed-chart";
+import { getOverviewStats, getJobsPerDay, getAudioHoursPerDay, getProcessingSpeedPerDay } from "@/lib/queries";
 
 export default async function OverviewPage() {
-  const stats = await getOverviewStats();
+  const [stats, jobsPerDay, audioHoursPerDay, speedPerDay] = await Promise.all([
+    getOverviewStats(),
+    getJobsPerDay(),
+    getAudioHoursPerDay(),
+    getProcessingSpeedPerDay(),
+  ]);
   const successRate = stats.totalJobs > 0 ? stats.succeededJobs / stats.totalJobs : 0;
 
   return (
@@ -21,13 +30,24 @@ export default async function OverviewPage() {
         <StatCard
           label="Avg. processing time"
           value={`${(stats.avgProcessingMs / 1000).toFixed(1)}s`}
+          hint={`≈${stats.realtimeMultiple.toFixed(1)}x realtime`}
         />
       </div>
 
-      <p className="mt-8 text-sm text-zinc-400 dark:text-zinc-600">
-        Charts coming next — this page will show jobs over time, audio hours processed, and
-        processing duration trends.
-      </p>
+      <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <ChartCard title="Jobs processed" subtitle="Succeeded vs. failed, per day">
+          <JobsChart data={jobsPerDay} />
+        </ChartCard>
+        <ChartCard title="Audio hours processed" subtitle="Total hours transcribed, per day">
+          <AudioHoursChart data={audioHoursPerDay} />
+        </ChartCard>
+        <ChartCard
+          title="Processing speed"
+          subtitle="Audio duration ÷ processing time, per day — normalized so a day of long episodes doesn't look 'slower'"
+        >
+          <SpeedChart data={speedPerDay} />
+        </ChartCard>
+      </div>
     </div>
   );
 }

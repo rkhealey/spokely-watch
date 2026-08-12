@@ -5,9 +5,14 @@ import { usePathname } from "next/navigation";
 
 const LINKS = [
   { href: "/", label: "Overview" },
+  { href: "/jobs", label: "Jobs" },
   { href: "/costs", label: "Costs" },
   { href: "/errors", label: "Errors" },
 ];
+
+function isLinkActive(pathname: string, href: string) {
+  return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function Nav() {
   const pathname = usePathname();
@@ -21,7 +26,7 @@ export function Nav() {
           </span>
           <nav className="flex gap-1">
             {LINKS.map((link) => {
-              const isActive = pathname === link.href;
+              const isActive = isLinkActive(pathname, link.href);
               return (
                 <Link
                   key={link.href}
