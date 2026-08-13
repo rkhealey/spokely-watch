@@ -82,10 +82,20 @@ export interface JobReportPayload {
 import { Injectable, Logger } from "@nestjs/common";
 import { JobReportPayload } from "./metrics.types";
 
+// SPOKELY_WATCH_URL is easy to paste without a scheme (e.g. copied from a
+// browser address bar as "spokely-watch.vercel.app"). fetch() requires an
+// absolute URL, so normalize it here instead of failing with an opaque
+// "Failed to parse URL" error at request time.
+function normalizeBaseUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const withScheme = /^https?:\/\//.test(url) ? url : `https://${url}`;
+  return withScheme.replace(/\/+$/, "");
+}
+
 @Injectable()
 export class SpokelyWatchService {
   private readonly logger = new Logger(SpokelyWatchService.name);
-  private readonly baseUrl = process.env.SPOKELY_WATCH_URL;
+  private readonly baseUrl = normalizeBaseUrl(process.env.SPOKELY_WATCH_URL);
   private readonly apiKey = process.env.SPOKELY_WATCH_INGEST_API_KEY;
 
   /**
@@ -232,8 +242,8 @@ async function processEpisode(episodeId: string) {
   ingestion reject the whole job with a `400`. If you add GPU tiers, update
   `lib/pricing.ts` in the Spokely Watch repo first.
 - **Anthropic `model` string must also match the pricing table**
-  (`claude-sonnet-5`, `claude-opus-5`, `claude-haiku-4-5` today). Same failure
-  mode if it doesn't.
+  (`claude-sonnet-5`, `claude-sonnet-4-6`, `claude-opus-5`, `claude-haiku-4-5`
+  today). Same failure mode if it doesn't.
 - **RunPod execution time/delay come from the job status response**
   (`executionTime` / `delayTime` in ms) — not something you need to compute.
   Send both, and send `delayMs` accurately: Spokely Watch bills on
