@@ -4,15 +4,22 @@ import { ChartCard } from "@/components/ui/chart-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { CostChart } from "@/components/charts/cost-chart";
 import { CostPerHourChart } from "@/components/charts/cost-per-hour-chart";
-import { getCostStats, getCostPerDay, getCostPerAudioHourPerDay, getTopJobsByCost } from "@/lib/queries";
+import {
+  getCostStats,
+  getCostPerDay,
+  getCostPerAudioHourPerDay,
+  getTopJobsByCost,
+  getCostsByShow,
+} from "@/lib/queries";
 import { formatCost, formatDateTime } from "@/lib/format";
 
 export default async function CostsPage() {
-  const [stats, costPerDay, costPerHourPerDay, topJobs] = await Promise.all([
+  const [stats, costPerDay, costPerHourPerDay, topJobs, costsByShow] = await Promise.all([
     getCostStats(),
     getCostPerDay(),
     getCostPerAudioHourPerDay(),
     getTopJobsByCost(),
+    getCostsByShow(),
   ]);
 
   return (
@@ -38,6 +45,56 @@ export default async function CostsPage() {
         >
           <CostPerHourChart data={costPerHourPerDay} />
         </ChartCard>
+      </div>
+
+      <div className="mt-6">
+        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Cost by show</h2>
+        <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-2 font-medium">Show</th>
+                <th className="px-4 py-2 text-right font-medium">Jobs</th>
+                <th className="px-4 py-2 text-right font-medium">RunPod</th>
+                <th className="px-4 py-2 text-right font-medium">Anthropic</th>
+                <th className="px-4 py-2 text-right font-medium">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {costsByShow.map((show) => (
+                <tr
+                  key={show.showId ?? "unknown"}
+                  className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+                >
+                  <td className="px-4 py-2 text-zinc-900 dark:text-zinc-50">
+                    {show.showId ? (
+                      <Link
+                        href={`/shows/${encodeURIComponent(show.showId)}`}
+                        className="hover:underline"
+                      >
+                        {show.showName}
+                      </Link>
+                    ) : (
+                      show.showName
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">
+                    {show.jobCount}
+                  </td>
+                  <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">
+                    {formatCost(show.runpodCostUsd)}
+                  </td>
+                  <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">
+                    {formatCost(show.anthropicCostUsd)}
+                  </td>
+                  <td className="px-4 py-2 text-right font-medium text-zinc-900 dark:text-zinc-50">
+                    {formatCost(show.costUsd)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="mt-6">

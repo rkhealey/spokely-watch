@@ -34,6 +34,8 @@ const errorSchema = z.object({
 const jobIngestSchema = z
   .object({
     externalId: z.string().min(1),
+    showId: z.string().optional(),
+    showName: z.string().optional(),
     status: z.enum(["SUCCEEDED", "FAILED"]),
     audioDurationSec: z.number().nonnegative().optional(),
     startedAt: isoDateString.optional(),
@@ -65,8 +67,18 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
-  const { externalId, status, audioDurationSec, startedAt, completedAt, runpod, anthropic, error } =
-    parsed.data;
+  const {
+    externalId,
+    showId,
+    showName,
+    status,
+    audioDurationSec,
+    startedAt,
+    completedAt,
+    runpod,
+    anthropic,
+    error,
+  } = parsed.data;
 
   const runpodWithCost: Array<z.infer<typeof runpodUsageSchema> & { costUsd: number }> = [];
   const anthropicWithCost: Array<
@@ -97,8 +109,17 @@ export async function POST(request: NextRequest) {
   const job = await db.$transaction(async (tx) => {
     const job = await tx.job.upsert({
       where: { externalId },
-      create: { externalId, status, audioDurationSec, startedAt: started, completedAt: completed, processingMs },
-      update: { status, audioDurationSec, startedAt: started, completedAt: completed, processingMs },
+      create: {
+        externalId,
+        showId,
+        showName,
+        status,
+        audioDurationSec,
+        startedAt: started,
+        completedAt: completed,
+        processingMs,
+      },
+      update: { showId, showName, status, audioDurationSec, startedAt: started, completedAt: completed, processingMs },
     });
 
     // Idempotent on retries: replace this job's child rows rather than appending.

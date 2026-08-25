@@ -214,6 +214,8 @@ export async function getRecentJobs(limit = 50) {
 
     return {
       externalId: job.externalId,
+      showId: job.showId,
+      showName: job.showName,
       status: job.status,
       createdAt: job.createdAt,
       audioDurationSec: job.audioDurationSec,
@@ -256,6 +258,8 @@ export async function getJobDetail(externalId: string) {
 
   return {
     externalId: job.externalId,
+    showId: job.showId,
+    showName: job.showName,
     status: job.status,
     createdAt: job.createdAt,
     startedAt: job.startedAt,
@@ -329,6 +333,94 @@ export async function getCostPerAudioHourPerDay(days = DEFAULT_WINDOW_DAYS) {
     date,
     costPerAudioHour: value.audioSec > 0 ? round2(value.cost / (value.audioSec / 3600)) : 0,
   }));
+}
+
+// Cost bucketed by show. Jobs without a showId (ingested before that field
+// existed, or from a pipeline not yet sending it) are grouped under "—".
+export async function getCostsByShow(days = DEFAULT_WINDOW_DAYS) {
+  const since = windowStart(days);
+  const jobs = await db.job.findMany({
+    where: { createdAt: { gte: since } },
+    select: {
+      showId: true,
+      showName: true,
+      audioDurationSec: true,
+      runpodUsage: { select: { costUsd: true } },
+      anthropicUsage: { select: { costUsd: true } },
+    },
+  });
+
+  const shows = new Map<
+    string,
+    { showId: string | null; showName: string | null; jobCount: number; audioSec: number; runpod: number; anthropic: number }
+  >();
+
+  for (const job of jobs) {
+    const key = job.showId ?? "__unknown__";
+    let bucket = shows.get(key);
+    if (!bucket) {
+      bucket = { showId: job.showId, showName: job.showName, jobCount: 0, audioSec: 0, runpod: 0, anthropic: 0 };
+      shows.set(key, bucket);
+    }
+    bucket.jobCount += 1;
+    bucket.audioSec += job.audioDurationSec ?? 0;
+    bucket.runpod += sumCost(job.runpodUsage);
+    bucket.anthropic += sumCost(job.anthropicUsage);
+  }
+
+  return Array.from(shows.values())
+    .map((bucket) => ({
+      showId: bucket.showId,
+      showName: bucket.showName ?? bucket.showId ?? "Unknown",
+      jobCount: bucket.jobCount,
+      audioHours: bucket.audioSec / 3600,
+      runpodCostUsd: round2(bucket.runpod),
+      anthropicCostUsd: round2(bucket.anthropic),
+      costUsd: round2(bucket.runpod + bucket.anthropic),
+    }))
+    .sort((a, b) => b.costUsd - a.costUsd);
+}
+
+// Every job for one show, unbounded by the 30-day window used elsewhere —
+// the show is already the filter, so there's no separate window to apply.
+export async function getJobsByShow(showId: string) {
+  const jobs = await db.job.findMany({
+    where: { showId },
+    orderBy: { createdAt: "desc" },
+    include: { runpodUsage: true, anthropicUsage: true },
+  });
+  if (jobs.length === 0) return null;
+
+  const rows = jobs.map((job) => {
+    const runpodCostUsd = sumCost(job.runpodUsage);
+    const anthropicCostUsd = sumCost(job.anthropicUsage);
+    return {
+      externalId: job.externalId,
+      status: job.status,
+      createdAt: job.createdAt,
+      audioDurationSec: job.audioDurationSec,
+      processingMs: job.processingMs,
+      runpodCostUsd,
+      anthropicCostUsd,
+      costUsd: runpodCostUsd + anthropicCostUsd,
+    };
+  });
+
+  const totals = rows.reduce(
+    (acc, row) => ({
+      runpodCostUsd: acc.runpodCostUsd + row.runpodCostUsd,
+      anthropicCostUsd: acc.anthropicCostUsd + row.anthropicCostUsd,
+      costUsd: acc.costUsd + row.costUsd,
+    }),
+    { runpodCostUsd: 0, anthropicCostUsd: 0, costUsd: 0 }
+  );
+
+  return {
+    showId,
+    showName: jobs[0].showName ?? showId,
+    jobs: rows,
+    totals,
+  };
 }
 
 export async function getTopJobsByCost(limit = 10, days = DEFAULT_WINDOW_DAYS) {

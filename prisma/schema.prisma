@@ -17,6 +17,10 @@ enum JobStatus {
 model Job {
   id               String    @id @default(cuid())
   externalId       String    @unique
+  // The pipeline's show/podcast identifier — not set on jobs ingested before
+  // this field existed, so always optional in queries and UI.
+  showId           String?
+  showName         String?
   status           JobStatus
   audioDurationSec Float?
   startedAt        DateTime?
@@ -31,6 +35,7 @@ model Job {
 
   @@index([createdAt])
   @@index([status])
+  @@index([showId])
 }
 
 model RunpodUsage {

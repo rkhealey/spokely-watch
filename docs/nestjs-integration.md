@@ -65,6 +65,10 @@ export interface JobErrorPayload {
 export interface JobReportPayload {
   /** Your pipeline's episode/job ID. */
   externalId: string;
+  /** Your pipeline's show/podcast ID — enables cost-by-show breakdowns. */
+  showId?: string;
+  /** Human-readable show name, shown in the dashboard instead of showId when present. */
+  showName?: string;
   status: "SUCCEEDED" | "FAILED";
   audioDurationSec?: number;
   startedAt?: string; // ISO 8601
@@ -171,7 +175,7 @@ loop with your actual pipeline code. The parts that matter are: capture
 path).
 
 ```typescript
-async function processEpisode(episodeId: string) {
+async function processEpisode(episodeId: string, show: { id: string; name: string }) {
   const startedAt = new Date();
   const anthropicUsage = new AnthropicUsageCollector();
 
@@ -196,6 +200,8 @@ async function processEpisode(episodeId: string) {
 
     await spokelyWatch.reportJob({
       externalId: episodeId,
+      showId: show.id,
+      showName: show.name,
       status: "SUCCEEDED",
       audioDurationSec,
       startedAt: startedAt.toISOString(),
@@ -221,6 +227,8 @@ async function processEpisode(episodeId: string) {
   } catch (err) {
     await spokelyWatch.reportJob({
       externalId: episodeId,
+      showId: show.id,
+      showName: show.name,
       status: "FAILED",
       startedAt: startedAt.toISOString(),
       completedAt: new Date().toISOString(),
@@ -274,6 +282,8 @@ curl -X POST http://localhost:3000/api/ingest/jobs \
   -H "x-api-key: $SPOKELY_WATCH_INGEST_API_KEY" \
   -d '{
     "externalId": "test_job_1",
+    "showId": "show_123",
+    "showName": "Example Show",
     "status": "SUCCEEDED",
     "audioDurationSec": 842.5,
     "startedAt": "2026-08-12T10:00:00Z",

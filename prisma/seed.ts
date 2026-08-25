@@ -20,6 +20,13 @@ const ANTHROPIC_RATE_PER_MTOK: Record<
   "claude-opus-5": { input: 15, output: 75 },
 };
 
+const SHOWS = [
+  { id: "show_daily_digest", name: "The Daily Digest" },
+  { id: "show_tech_talk", name: "Tech Talk Weekly" },
+  { id: "show_true_crime_files", name: "True Crime Files" },
+  { id: "show_startup_stories", name: "Startup Stories" },
+] as const;
+
 const ERROR_POOL: { stage: string; code: string; message: string }[] = [
   { stage: "runpod", code: "RUNPOD_TIMEOUT", message: "Worker did not respond within the timeout window" },
   { stage: "runpod", code: "RUNPOD_OOM", message: "GPU worker ran out of memory" },
@@ -73,6 +80,7 @@ async function main() {
       const isFailure = Math.random() < 0.07;
 
       const externalId = `job_${dayStart.toISOString().slice(0, 10)}_${i}_${randInt(1000, 9999)}`;
+      const show = pick(SHOWS);
 
       if (isFailure) {
         const err = pick(ERROR_POOL);
@@ -82,6 +90,8 @@ async function main() {
         await db.job.create({
           data: {
             externalId,
+            showId: show.id,
+            showName: show.name,
             status: JobStatus.FAILED,
             audioDurationSec,
             startedAt,
@@ -148,6 +158,8 @@ async function main() {
       await db.job.create({
         data: {
           externalId,
+          showId: show.id,
+          showName: show.name,
           status: JobStatus.SUCCEEDED,
           audioDurationSec,
           startedAt,

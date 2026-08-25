@@ -28,6 +28,7 @@ export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]
       </div>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         {formatDateTime(job.createdAt)}
+        {(job.showName ?? job.showId) && ` · ${job.showName ?? job.showId}`}
       </p>
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
