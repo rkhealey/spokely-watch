@@ -209,7 +209,8 @@ export async function getRecentJobs(limit = 50) {
   });
 
   return jobs.map((job) => {
-    const costUsd = sumCost(job.runpodUsage) + sumCost(job.anthropicUsage);
+    const runpodCostUsd = sumCost(job.runpodUsage);
+    const anthropicCostUsd = sumCost(job.anthropicUsage);
 
     return {
       externalId: job.externalId,
@@ -217,7 +218,9 @@ export async function getRecentJobs(limit = 50) {
       createdAt: job.createdAt,
       audioDurationSec: job.audioDurationSec,
       processingMs: job.processingMs,
-      costUsd,
+      runpodCostUsd,
+      anthropicCostUsd,
+      costUsd: runpodCostUsd + anthropicCostUsd,
     };
   });
 }
@@ -336,12 +339,18 @@ export async function getTopJobsByCost(limit = 10, days = DEFAULT_WINDOW_DAYS) {
   });
 
   return jobs
-    .map((job) => ({
-      externalId: job.externalId,
-      status: job.status,
-      createdAt: job.createdAt,
-      costUsd: sumCost(job.runpodUsage) + sumCost(job.anthropicUsage),
-    }))
+    .map((job) => {
+      const runpodCostUsd = sumCost(job.runpodUsage);
+      const anthropicCostUsd = sumCost(job.anthropicUsage);
+      return {
+        externalId: job.externalId,
+        status: job.status,
+        createdAt: job.createdAt,
+        runpodCostUsd,
+        anthropicCostUsd,
+        costUsd: runpodCostUsd + anthropicCostUsd,
+      };
+    })
     .sort((a, b) => b.costUsd - a.costUsd)
     .slice(0, limit);
 }

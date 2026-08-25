@@ -22,7 +22,9 @@ export default async function JobsPage() {
               <th className="px-4 py-2 font-medium">Date</th>
               <th className="px-4 py-2 font-medium">Audio</th>
               <th className="px-4 py-2 font-medium">Processing</th>
-              <th className="px-4 py-2 font-medium">Cost</th>
+              <th className="px-4 py-2 text-right font-medium">RunPod</th>
+              <th className="px-4 py-2 text-right font-medium">Anthropic</th>
+              <th className="px-4 py-2 text-right font-medium">Total</th>
             </tr>
           </thead>
           <tbody>
@@ -51,7 +53,13 @@ export default async function JobsPage() {
                 <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
                   {job.processingMs != null ? formatDuration(job.processingMs / 1000) : "—"}
                 </td>
-                <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
+                <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">
+                  {formatCost(job.runpodCostUsd)}
+                </td>
+                <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">
+                  {formatCost(job.anthropicCostUsd)}
+                </td>
+                <td className="px-4 py-2 text-right font-medium text-zinc-900 dark:text-zinc-50">
                   {formatCost(job.costUsd)}
                 </td>
               </tr>
