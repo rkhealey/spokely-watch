@@ -2,11 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getJobsByShow } from "@/lib/queries";
+import { getEnvironmentFilter } from "@/lib/environment";
 import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
 
 export default async function ShowDetailPage(props: PageProps<"/shows/[showId]">) {
   const { showId } = await props.params;
-  const show = await getJobsByShow(decodeURIComponent(showId));
+  const environment = await getEnvironmentFilter();
+  const show = await getJobsByShow(decodeURIComponent(showId), environment);
 
   if (!show) notFound();
 

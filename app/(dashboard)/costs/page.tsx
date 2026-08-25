@@ -11,15 +11,17 @@ import {
   getTopJobsByCost,
   getCostsByShow,
 } from "@/lib/queries";
+import { getEnvironmentFilter } from "@/lib/environment";
 import { formatCost, formatDateTime } from "@/lib/format";
 
 export default async function CostsPage() {
+  const environment = await getEnvironmentFilter();
   const [stats, costPerDay, costPerHourPerDay, topJobs, costsByShow] = await Promise.all([
-    getCostStats(),
-    getCostPerDay(),
-    getCostPerAudioHourPerDay(),
-    getTopJobsByCost(),
-    getCostsByShow(),
+    getCostStats(environment),
+    getCostPerDay(environment),
+    getCostPerAudioHourPerDay(environment),
+    getTopJobsByCost(environment),
+    getCostsByShow(environment),
   ]);
 
   return (

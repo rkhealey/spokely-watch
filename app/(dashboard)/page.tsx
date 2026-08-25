@@ -4,13 +4,15 @@ import { JobsChart } from "@/components/charts/jobs-chart";
 import { AudioHoursChart } from "@/components/charts/audio-hours-chart";
 import { SpeedChart } from "@/components/charts/speed-chart";
 import { getOverviewStats, getJobsPerDay, getAudioHoursPerDay, getProcessingSpeedPerDay } from "@/lib/queries";
+import { getEnvironmentFilter } from "@/lib/environment";
 
 export default async function OverviewPage() {
+  const environment = await getEnvironmentFilter();
   const [stats, jobsPerDay, audioHoursPerDay, speedPerDay] = await Promise.all([
-    getOverviewStats(),
-    getJobsPerDay(),
-    getAudioHoursPerDay(),
-    getProcessingSpeedPerDay(),
+    getOverviewStats(environment),
+    getJobsPerDay(environment),
+    getAudioHoursPerDay(environment),
+    getProcessingSpeedPerDay(environment),
   ]);
   const successRate = stats.totalJobs > 0 ? stats.succeededJobs / stats.totalJobs : 0;
 

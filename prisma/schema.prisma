@@ -14,20 +14,28 @@ enum JobStatus {
   FAILED
 }
 
+enum Environment {
+  PRODUCTION
+  DEVELOPMENT
+}
+
 model Job {
-  id               String    @id @default(cuid())
-  externalId       String    @unique
+  id               String      @id @default(cuid())
+  externalId       String      @unique
   // The pipeline's show/podcast identifier — not set on jobs ingested before
   // this field existed, so always optional in queries and UI.
   showId           String?
   showName         String?
+  // Defaults to PRODUCTION so jobs ingested before this field existed (and
+  // any payload that omits it) are treated as real production traffic.
+  environment      Environment @default(PRODUCTION)
   status           JobStatus
   audioDurationSec Float?
   startedAt        DateTime?
   completedAt      DateTime?
   processingMs     Int?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
 
   runpodUsage    RunpodUsage[]
   anthropicUsage AnthropicUsage[]
@@ -36,6 +44,7 @@ model Job {
   @@index([createdAt])
   @@index([status])
   @@index([showId])
+  @@index([environment])
 }
 
 model RunpodUsage {

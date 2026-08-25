@@ -69,6 +69,8 @@ export interface JobReportPayload {
   showId?: string;
   /** Human-readable show name, shown in the dashboard instead of showId when present. */
   showName?: string;
+  /** Defaults to "PRODUCTION" if omitted — set to "DEVELOPMENT" for local/test runs so they don't pollute production metrics. */
+  environment?: "PRODUCTION" | "DEVELOPMENT";
   status: "SUCCEEDED" | "FAILED";
   audioDurationSec?: number;
   startedAt?: string; // ISO 8601
@@ -245,6 +247,11 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
 
 ## Important notes
 
+- **Set `environment: "DEVELOPMENT"` when running the pipeline locally or
+  against test data.** The dashboard defaults to showing production jobs
+  only, so unmarked local/test runs will look like real production traffic —
+  set this from `NODE_ENV` (or whatever your service already uses to know
+  it's not prod) rather than hardcoding it.
 - **GPU type must match Spokely Watch's pricing table exactly** (case-sensitive).
   Right now that's just `"24GB"` at $0.69/hr — an unrecognized `gpuType` makes
   ingestion reject the whole job with a `400`. If you add GPU tiers, update
@@ -284,6 +291,7 @@ curl -X POST http://localhost:3000/api/ingest/jobs \
     "externalId": "test_job_1",
     "showId": "show_123",
     "showName": "Example Show",
+    "environment": "DEVELOPMENT",
     "status": "SUCCEEDED",
     "audioDurationSec": 842.5,
     "startedAt": "2026-08-12T10:00:00Z",

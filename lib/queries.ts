@@ -1,3 +1,4 @@
+import type { Environment } from "@prisma/client";
 import { db } from "./db";
 
 const DEFAULT_WINDOW_DAYS = 30;
@@ -44,19 +45,19 @@ function sumCost(usages: ReadonlyArray<{ costUsd: { toNumber(): number } }>) {
   return usages.reduce((sum, u) => sum + u.costUsd.toNumber(), 0);
 }
 
-export async function getOverviewStats() {
+export async function getOverviewStats(environment: Environment) {
   const since = windowStart();
 
   const [totalJobs, succeededJobs, failedJobs, audioAgg, durationAgg] = await Promise.all([
-    db.job.count({ where: { createdAt: { gte: since } } }),
-    db.job.count({ where: { createdAt: { gte: since }, status: "SUCCEEDED" } }),
-    db.job.count({ where: { createdAt: { gte: since }, status: "FAILED" } }),
+    db.job.count({ where: { createdAt: { gte: since }, environment } }),
+    db.job.count({ where: { createdAt: { gte: since }, environment, status: "SUCCEEDED" } }),
+    db.job.count({ where: { createdAt: { gte: since }, environment, status: "FAILED" } }),
     db.job.aggregate({
-      where: { createdAt: { gte: since }, status: "SUCCEEDED" },
+      where: { createdAt: { gte: since }, environment, status: "SUCCEEDED" },
       _sum: { audioDurationSec: true },
     }),
     db.job.aggregate({
-      where: { createdAt: { gte: since }, status: "SUCCEEDED" },
+      where: { createdAt: { gte: since }, environment, status: "SUCCEEDED" },
       _avg: { processingMs: true },
       _sum: { processingMs: true },
     }),
@@ -77,21 +78,21 @@ export async function getOverviewStats() {
   };
 }
 
-export async function getCostStats() {
+export async function getCostStats(environment: Environment) {
   const since = windowStart();
 
   const [runpodAgg, anthropicAgg, succeededJobs, audioAgg] = await Promise.all([
     db.runpodUsage.aggregate({
-      where: { job: { createdAt: { gte: since } } },
+      where: { job: { createdAt: { gte: since }, environment } },
       _sum: { costUsd: true },
     }),
     db.anthropicUsage.aggregate({
-      where: { job: { createdAt: { gte: since } } },
+      where: { job: { createdAt: { gte: since }, environment } },
       _sum: { costUsd: true },
     }),
-    db.job.count({ where: { createdAt: { gte: since }, status: "SUCCEEDED" } }),
+    db.job.count({ where: { createdAt: { gte: since }, environment, status: "SUCCEEDED" } }),
     db.job.aggregate({
-      where: { createdAt: { gte: since }, status: "SUCCEEDED" },
+      where: { createdAt: { gte: since }, environment, status: "SUCCEEDED" },
       _sum: { audioDurationSec: true },
     }),
   ]);
@@ -112,15 +113,15 @@ export async function getCostStats() {
   };
 }
 
-export async function getErrorStats() {
+export async function getErrorStats(environment: Environment) {
   const since = windowStart();
 
   const [totalJobs, failedJobs, errorsByStage] = await Promise.all([
-    db.job.count({ where: { createdAt: { gte: since } } }),
-    db.job.count({ where: { createdAt: { gte: since }, status: "FAILED" } }),
+    db.job.count({ where: { createdAt: { gte: since }, environment } }),
+    db.job.count({ where: { createdAt: { gte: since }, environment, status: "FAILED" } }),
     db.jobError.groupBy({
       by: ["stage"],
-      where: { job: { createdAt: { gte: since } } },
+      where: { job: { createdAt: { gte: since }, environment } },
       _count: { _all: true },
     }),
   ]);
@@ -135,10 +136,10 @@ export async function getErrorStats() {
   };
 }
 
-export async function getJobsPerDay(days = DEFAULT_WINDOW_DAYS) {
+export async function getJobsPerDay(environment: Environment, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const rows = await db.job.findMany({
-    where: { createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, environment },
     select: { createdAt: true, status: true },
   });
 
@@ -153,10 +154,10 @@ export async function getJobsPerDay(days = DEFAULT_WINDOW_DAYS) {
   return Array.from(buckets, ([date, value]) => ({ date, ...value }));
 }
 
-export async function getAudioHoursPerDay(days = DEFAULT_WINDOW_DAYS) {
+export async function getAudioHoursPerDay(environment: Environment, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const rows = await db.job.findMany({
-    where: { createdAt: { gte: since }, status: "SUCCEEDED" },
+    where: { createdAt: { gte: since }, environment, status: "SUCCEEDED" },
     select: { createdAt: true, audioDurationSec: true },
   });
 
@@ -174,11 +175,12 @@ export async function getAudioHoursPerDay(days = DEFAULT_WINDOW_DAYS) {
 // as sum(audio) / sum(processing) rather than an average of per-job ratios.
 // Averaging raw processing time instead would make a day of long episodes
 // look "slower" than a day of short ones even at identical throughput.
-export async function getProcessingSpeedPerDay(days = DEFAULT_WINDOW_DAYS) {
+export async function getProcessingSpeedPerDay(environment: Environment, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const rows = await db.job.findMany({
     where: {
       createdAt: { gte: since },
+      environment,
       status: "SUCCEEDED",
       processingMs: { not: null },
       audioDurationSec: { not: null },
@@ -201,8 +203,9 @@ export async function getProcessingSpeedPerDay(days = DEFAULT_WINDOW_DAYS) {
   }));
 }
 
-export async function getRecentJobs(limit = 50) {
+export async function getRecentJobs(environment: Environment, limit = 50) {
   const jobs = await db.job.findMany({
+    where: { environment },
     orderBy: { createdAt: "desc" },
     take: limit,
     include: { runpodUsage: true, anthropicUsage: true },
@@ -260,6 +263,7 @@ export async function getJobDetail(externalId: string) {
     externalId: job.externalId,
     showId: job.showId,
     showName: job.showName,
+    environment: job.environment,
     status: job.status,
     createdAt: job.createdAt,
     startedAt: job.startedAt,
@@ -279,10 +283,10 @@ export async function getJobDetail(externalId: string) {
 
 // Cost bucketed by day and split by vendor. Not filtered by status — a
 // failed job can still have incurred real RunPod/Anthropic spend.
-export async function getCostPerDay(days = DEFAULT_WINDOW_DAYS) {
+export async function getCostPerDay(environment: Environment, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const jobs = await db.job.findMany({
-    where: { createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, environment },
     select: {
       createdAt: true,
       runpodUsage: { select: { costUsd: true } },
@@ -308,10 +312,10 @@ export async function getCostPerDay(days = DEFAULT_WINDOW_DAYS) {
 // Unit cost per day: total spend / hours of audio delivered that day.
 // Aggregate ratio (sum/sum) for the same reason as the speed chart — an
 // average of per-job ratios would be skewed by very short jobs.
-export async function getCostPerAudioHourPerDay(days = DEFAULT_WINDOW_DAYS) {
+export async function getCostPerAudioHourPerDay(environment: Environment, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const jobs = await db.job.findMany({
-    where: { createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, environment },
     select: {
       createdAt: true,
       audioDurationSec: true,
@@ -337,10 +341,10 @@ export async function getCostPerAudioHourPerDay(days = DEFAULT_WINDOW_DAYS) {
 
 // Cost bucketed by show. Jobs without a showId (ingested before that field
 // existed, or from a pipeline not yet sending it) are grouped under "—".
-export async function getCostsByShow(days = DEFAULT_WINDOW_DAYS) {
+export async function getCostsByShow(environment: Environment, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const jobs = await db.job.findMany({
-    where: { createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, environment },
     select: {
       showId: true,
       showName: true,
@@ -383,9 +387,9 @@ export async function getCostsByShow(days = DEFAULT_WINDOW_DAYS) {
 
 // Every job for one show, unbounded by the 30-day window used elsewhere —
 // the show is already the filter, so there's no separate window to apply.
-export async function getJobsByShow(showId: string) {
+export async function getJobsByShow(showId: string, environment: Environment) {
   const jobs = await db.job.findMany({
-    where: { showId },
+    where: { showId, environment },
     orderBy: { createdAt: "desc" },
     include: { runpodUsage: true, anthropicUsage: true },
   });
@@ -423,10 +427,10 @@ export async function getJobsByShow(showId: string) {
   };
 }
 
-export async function getTopJobsByCost(limit = 10, days = DEFAULT_WINDOW_DAYS) {
+export async function getTopJobsByCost(environment: Environment, limit = 10, days = DEFAULT_WINDOW_DAYS) {
   const since = windowStart(days);
   const jobs = await db.job.findMany({
-    where: { createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, environment },
     include: { runpodUsage: true, anthropicUsage: true },
   });
 
@@ -447,9 +451,9 @@ export async function getTopJobsByCost(limit = 10, days = DEFAULT_WINDOW_DAYS) {
     .slice(0, limit);
 }
 
-export async function getRecentFailedJobs(limit = 20) {
+export async function getRecentFailedJobs(environment: Environment, limit = 20) {
   const jobs = await db.job.findMany({
-    where: { status: "FAILED" },
+    where: { status: "FAILED", environment },
     orderBy: { createdAt: "desc" },
     take: limit,
     include: { error: true },

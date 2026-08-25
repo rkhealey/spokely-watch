@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { getJobDetail } from "@/lib/queries";
 import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
 
@@ -25,6 +26,7 @@ export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]
           {job.externalId}
         </h1>
         <StatusBadge status={job.status} />
+        <EnvironmentBadge environment={job.environment} />
       </div>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         {formatDateTime(job.createdAt)}

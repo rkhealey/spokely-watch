@@ -36,6 +36,9 @@ const jobIngestSchema = z
     externalId: z.string().min(1),
     showId: z.string().optional(),
     showName: z.string().optional(),
+    // Omitted defaults to PRODUCTION — a pipeline that hasn't been updated
+    // to send this yet is real traffic, not a dev/test run.
+    environment: z.enum(["PRODUCTION", "DEVELOPMENT"]).default("PRODUCTION"),
     status: z.enum(["SUCCEEDED", "FAILED"]),
     audioDurationSec: z.number().nonnegative().optional(),
     startedAt: isoDateString.optional(),
@@ -71,6 +74,7 @@ export async function POST(request: NextRequest) {
     externalId,
     showId,
     showName,
+    environment,
     status,
     audioDurationSec,
     startedAt,
@@ -113,13 +117,23 @@ export async function POST(request: NextRequest) {
         externalId,
         showId,
         showName,
+        environment,
         status,
         audioDurationSec,
         startedAt: started,
         completedAt: completed,
         processingMs,
       },
-      update: { showId, showName, status, audioDurationSec, startedAt: started, completedAt: completed, processingMs },
+      update: {
+        showId,
+        showName,
+        environment,
+        status,
+        audioDurationSec,
+        startedAt: started,
+        completedAt: completed,
+        processingMs,
+      },
     });
 
     // Idempotent on retries: replace this job's child rows rather than appending.

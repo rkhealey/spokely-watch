@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getRecentJobs } from "@/lib/queries";
+import { getEnvironmentFilter } from "@/lib/environment";
 import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
 
 export default async function JobsPage() {
-  const jobs = await getRecentJobs();
+  const environment = await getEnvironmentFilter();
+  const jobs = await getRecentJobs(environment);
 
   return (
     <div>

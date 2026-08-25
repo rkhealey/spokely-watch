@@ -3,13 +3,15 @@ import { StatCard } from "@/components/ui/stat-card";
 import { ChartCard } from "@/components/ui/chart-card";
 import { FailureRateChart } from "@/components/charts/failure-rate-chart";
 import { getErrorStats, getJobsPerDay, getRecentFailedJobs } from "@/lib/queries";
+import { getEnvironmentFilter } from "@/lib/environment";
 import { formatDateTime } from "@/lib/format";
 
 export default async function ErrorsPage() {
+  const environment = await getEnvironmentFilter();
   const [stats, jobsPerDay, recentFailures] = await Promise.all([
-    getErrorStats(),
-    getJobsPerDay(),
-    getRecentFailedJobs(),
+    getErrorStats(environment),
+    getJobsPerDay(environment),
+    getRecentFailedJobs(environment),
   ]);
 
   const failureRatePerDay = jobsPerDay.map((day) => {
