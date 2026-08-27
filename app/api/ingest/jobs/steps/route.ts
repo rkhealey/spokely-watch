@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { isoDateString } from "@/lib/zod-helpers";
+import { PIPELINE_STEPS } from "@/lib/steps";
 
 // One event per step transition (STARTED, then SUCCEEDED or FAILED). Each
 // event upserts a single JobStep row keyed on (jobId, step) — this is a
@@ -10,7 +11,7 @@ import { isoDateString } from "@/lib/zod-helpers";
 // first event seen for externalId and a Job has to be created.
 const stepIngestSchema = z.object({
   externalId: z.string().min(1),
-  step: z.string().min(1),
+  step: z.enum(PIPELINE_STEPS),
   status: z.enum(["STARTED", "SUCCEEDED", "FAILED"]),
   at: isoDateString.optional(),
   showId: z.string().optional(),

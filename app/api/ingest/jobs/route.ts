@@ -3,11 +3,12 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { computeAnthropicCostUsd, computeRunpodCostUsd, UnknownPricingKeyError } from "@/lib/pricing";
 import { isoDateString } from "@/lib/zod-helpers";
+import { PIPELINE_STEPS } from "@/lib/steps";
 
 const runpodUsageSchema = z.object({
-  // Which container this run was, e.g. "transcribe" / "diarize" — a job can
-  // have multiple RunPod containers running in parallel on the same episode.
-  task: z.string().optional(),
+  // Which pipeline step this container run belongs to — a job can have
+  // multiple RunPod containers running in parallel on the same episode.
+  task: z.enum(PIPELINE_STEPS).optional(),
   endpointId: z.string().optional(),
   gpuType: z.string(),
   executionMs: z.number().int().nonnegative(),
@@ -15,9 +16,9 @@ const runpodUsageSchema = z.object({
 });
 
 const anthropicUsageSchema = z.object({
-  // Which pipeline step this call belongs to, e.g. "anthropic_summarize" —
-  // mirrors RunpodUsagePayload.task. A step can make more than one call.
-  step: z.string().optional(),
+  // Which pipeline step this call belongs to — mirrors RunpodUsagePayload.task.
+  // A step can make more than one call.
+  step: z.enum(PIPELINE_STEPS).optional(),
   model: z.string(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
@@ -29,10 +30,10 @@ const errorSchema = z.object({
   code: z.string().optional(),
   message: z.string().min(1),
   stage: z.string().optional(),
-  // The specific pipeline step running when this failure happened, e.g.
-  // "diarize" — finer-grained than `stage`. Independent of any step-level
-  // event sent to /api/ingest/jobs/steps, since a hard crash may skip that.
-  step: z.string().optional(),
+  // The specific pipeline step running when this failure happened —
+  // finer-grained than `stage`. Independent of any step-level event sent to
+  // /api/ingest/jobs/steps, since a hard crash may skip that.
+  step: z.enum(PIPELINE_STEPS).optional(),
 });
 
 const jobIngestSchema = z

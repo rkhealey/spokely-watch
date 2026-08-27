@@ -44,10 +44,24 @@ you generate on this side.
 ### `metrics.types.ts`
 
 ```typescript
+// Must match Spokely Watch's lib/steps.ts exactly (case-sensitive) — used
+// for RunpodUsagePayload.task, AnthropicUsagePayload.step, JobErrorPayload.step,
+// and StepReportPayload.step. An unrecognized value gets a 400.
+export type PipelineStep =
+  | "download_audio"
+  | "transcription"
+  | "diarization"
+  | "merge"
+  | "load_transcript"
+  | "prepare_transcript"
+  | "llm"
+  | "validate"
+  | "persist";
+
 export interface RunpodUsagePayload {
-  /** Which container this run was, e.g. "transcribe" or "diarize" — a job
-   * can have multiple RunPod containers running in parallel on one episode. */
-  task?: string;
+  /** Which pipeline step this container run belongs to — a job can have
+   * multiple RunPod containers running in parallel on one episode. */
+  task?: PipelineStep;
   endpointId?: string;
   /** Must match a key in Spokely Watch's lib/pricing.ts (currently "24GB"). */
   gpuType: string;
@@ -56,9 +70,9 @@ export interface RunpodUsagePayload {
 }
 
 export interface AnthropicUsagePayload {
-  /** Which pipeline step this call belongs to, e.g. "anthropic_summarize" —
-   * mirrors RunpodUsagePayload.task. A step can make more than one call. */
-  step?: string;
+  /** Which pipeline step this call belongs to — mirrors RunpodUsagePayload.task.
+   * A step can make more than one call. */
+  step?: PipelineStep;
   /** Must match a key in Spokely Watch's lib/pricing.ts, e.g. "claude-sonnet-5". */
   model: string;
   inputTokens: number;
@@ -72,19 +86,16 @@ export interface JobErrorPayload {
   message: string;
   /** e.g. "runpod" | "anthropic" | "pipeline" */
   stage?: string;
-  /** The specific step running when this failure happened, e.g. "diarize" —
-   * finer-grained than `stage`. Set this even if you also sent a step
-   * FAILED event; a hard crash may skip that event entirely. */
-  step?: string;
+  /** The specific step running when this failure happened — finer-grained
+   * than `stage`. Set this even if you also sent a step FAILED event; a
+   * hard crash may skip that event entirely. */
+  step?: PipelineStep;
 }
 
 export interface StepReportPayload {
   /** Your pipeline's episode/job ID — same value as JobReportPayload.externalId. */
   externalId: string;
-  /** Step name, e.g. "transcribe" / "diarize" / "anthropic_summarize". Use
-   * the same name consistently — it's matched against RunpodUsagePayload.task
-   * and AnthropicUsagePayload.step to attribute cost to this step. */
-  step: string;
+  step: PipelineStep;
   status: "STARTED" | "SUCCEEDED" | "FAILED";
   /** When this transition happened. Defaults to server receipt time if omitted. */
   at?: string; // ISO 8601
@@ -202,13 +213,13 @@ episode). This accumulates usage across calls so you can build the
 
 ```typescript
 import type Anthropic from "@anthropic-ai/sdk";
-import { AnthropicUsagePayload } from "./metrics.types";
+import { AnthropicUsagePayload, PipelineStep } from "./metrics.types";
 
 export class AnthropicUsageCollector {
   private readonly entries: AnthropicUsagePayload[] = [];
 
   /** Call this right after every `anthropic.messages.create(...)` response. */
-  record(step: string, model: string, usage: Anthropic.Usage): void {
+  record(step: PipelineStep, model: string, usage: Anthropic.Usage): void {
     this.entries.push({
       step,
       model,
@@ -233,31 +244,48 @@ loop with your actual pipeline code. The parts that matter are: capture
 `reportStep` around each stage transition, and call `reportJob` once at the
 end (success path) or in the catch block (failure path).
 
+The full pipeline has nine steps (`download_audio`, `transcription`,
+`diarization`, `merge`, `load_transcript`, `prepare_transcript`, `llm`,
+`validate`, `persist`) — only `transcription`/`diarization` (RunPod) and
+`llm` (Anthropic) carry cost data on the final `reportJob` call. The rest are
+plain `reportStep` calls with no attached cost, shown below as `runPipelineStep`
+for brevity; wire each one up the same way as `download_audio`.
+
 ```typescript
 async function processEpisode(episodeId: string, show: { id: string; name: string }) {
   const startedAt = new Date();
   const anthropicUsage = new AnthropicUsageCollector();
-  let currentStep = "transcribe";
+  let currentStep: PipelineStep = "download_audio";
 
   try {
-    const audioDurationSec = await getAudioDurationSec(episodeId);
+    // Cost-less steps just wrap the work in a STARTED/SUCCEEDED pair.
+    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "STARTED" });
+    const audioDurationSec = await runPipelineStep(currentStep, episodeId);
+    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "SUCCEEDED" });
 
     // Two RunPod containers running in parallel on the same episode — each
     // gets its own step so the dashboard shows them as separate rows.
     await Promise.all([
-      spokelyWatch.reportStep({ externalId: episodeId, step: "transcribe", status: "STARTED" }),
-      spokelyWatch.reportStep({ externalId: episodeId, step: "diarize", status: "STARTED" }),
+      spokelyWatch.reportStep({ externalId: episodeId, step: "transcription", status: "STARTED" }),
+      spokelyWatch.reportStep({ externalId: episodeId, step: "diarization", status: "STARTED" }),
     ]);
     const [transcribeResult, diarizeResult] = await Promise.all([
-      runRunpodContainer("transcribe", episodeId),
-      runRunpodContainer("diarize", episodeId),
+      runRunpodContainer("transcription", episodeId),
+      runRunpodContainer("diarization", episodeId),
     ]);
     await Promise.all([
-      spokelyWatch.reportStep({ externalId: episodeId, step: "transcribe", status: "SUCCEEDED" }),
-      spokelyWatch.reportStep({ externalId: episodeId, step: "diarize", status: "SUCCEEDED" }),
+      spokelyWatch.reportStep({ externalId: episodeId, step: "transcription", status: "SUCCEEDED" }),
+      spokelyWatch.reportStep({ externalId: episodeId, step: "diarization", status: "SUCCEEDED" }),
     ]);
 
-    currentStep = "anthropic_summarize";
+    for (const step of ["merge", "load_transcript", "prepare_transcript"] as const) {
+      currentStep = step;
+      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "STARTED" });
+      await runPipelineStep(step, episodeId);
+      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "SUCCEEDED" });
+    }
+
+    currentStep = "llm";
     await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "STARTED" });
 
     // One or more Claude calls — record usage after each, tagged with the step.
@@ -271,6 +299,13 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
     }
     await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "SUCCEEDED" });
 
+    for (const step of ["validate", "persist"] as const) {
+      currentStep = step;
+      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "STARTED" });
+      await runPipelineStep(step, episodeId);
+      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "SUCCEEDED" });
+    }
+
     await spokelyWatch.reportJob({
       externalId: episodeId,
       showId: show.id,
@@ -281,14 +316,14 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       completedAt: new Date().toISOString(),
       runpod: [
         {
-          task: "transcribe",
+          task: "transcription",
           gpuType: process.env.RUNPOD_GPU_TYPE!, // e.g. "24GB" — your endpoint's configured tier
           endpointId: transcribeResult.endpointId,
           executionMs: transcribeResult.executionTime,
           delayMs: transcribeResult.delayTime,
         },
         {
-          task: "diarize",
+          task: "diarization",
           gpuType: process.env.RUNPOD_GPU_TYPE!,
           endpointId: diarizeResult.endpointId,
           executionMs: diarizeResult.executionTime,
@@ -320,11 +355,15 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
 
 ## Important notes
 
+- **`step` must be one of the nine fixed pipeline step names** —
+  `download_audio`, `transcription`, `diarization`, `merge`, `load_transcript`,
+  `prepare_transcript`, `llm`, `validate`, `persist` (case-sensitive, kept in
+  sync with Spokely Watch's `lib/steps.ts`). An unrecognized value gets a
+  `400`, on `/jobs/steps` and on `RunpodUsagePayload.task`/
+  `AnthropicUsagePayload.step`/`JobErrorPayload.step` in `/jobs`.
 - **`reportStep` is optional but cheap to add incrementally.** If you only
   wire up a couple of steps at first, the dashboard just shows cost/duration
-  for those and "—" for the rest — nothing breaks. Use the same `step` name
-  consistently across `reportStep`, `RunpodUsagePayload.task`, and
-  `AnthropicUsagePayload.step` so the dashboard can attribute cost to it.
+  for those and "—" for the rest — nothing breaks.
 - **A step event can arrive before the job exists** (e.g. the very first
   `STARTED` event for a new episode) — that's fine, it creates the job with
   status `PROCESSING`. But a step event arriving *after* the final `reportJob`
@@ -381,8 +420,8 @@ curl -X POST http://localhost:3000/api/ingest/jobs \
     "startedAt": "2026-08-12T10:00:00Z",
     "completedAt": "2026-08-12T10:02:14Z",
     "runpod": [
-      { "task": "transcribe", "gpuType": "24GB", "executionMs": 118000, "delayMs": 400 },
-      { "task": "diarize", "gpuType": "24GB", "executionMs": 54000, "delayMs": 300 }
+      { "task": "transcription", "gpuType": "24GB", "executionMs": 118000, "delayMs": 400 },
+      { "task": "diarization", "gpuType": "24GB", "executionMs": 54000, "delayMs": 300 }
     ],
     "anthropic": [
       { "model": "claude-sonnet-5", "inputTokens": 12000, "outputTokens": 900, "cacheReadTokens": 8000 }
@@ -405,9 +444,9 @@ curl -X POST http://localhost:3000/api/ingest/jobs/steps \
     "externalId": "test_job_2",
     "showId": "show_123",
     "environment": "DEVELOPMENT",
-    "step": "transcribe",
+    "step": "transcription",
     "status": "STARTED"
   }'
 ```
 
-A `200` response returns `{"id": "...", "step": "transcribe", "status": "STARTED"}`.
+A `200` response returns `{"id": "...", "step": "transcription", "status": "STARTED"}`.
