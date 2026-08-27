@@ -2,6 +2,7 @@ import Link from "next/link";
 import { StatCard } from "@/components/ui/stat-card";
 import { ChartCard } from "@/components/ui/chart-card";
 import { FailureRateChart } from "@/components/charts/failure-rate-chart";
+import { RetryButton } from "@/components/ui/retry-button";
 import { getErrorStats, getJobsPerDay, getRecentFailedJobs } from "@/lib/queries";
 import { getEnvironmentFilter } from "@/lib/environment";
 import { formatDateTime } from "@/lib/format";
@@ -69,6 +70,7 @@ export default async function ErrorsPage() {
                   <th className="px-4 py-2 font-medium">Stage</th>
                   <th className="px-4 py-2 font-medium">Step</th>
                   <th className="px-4 py-2 font-medium">Error</th>
+                  <th className="px-4 py-2 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -95,6 +97,9 @@ export default async function ErrorsPage() {
                       {job.step ?? "—"}
                     </td>
                     <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">{job.message}</td>
+                    <td className="px-4 py-2">
+                      <RetryButton externalId={job.externalId} />
+                    </td>
                   </tr>
                 ))}
               </tbody>

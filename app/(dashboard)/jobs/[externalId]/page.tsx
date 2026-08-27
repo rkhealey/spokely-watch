@@ -4,6 +4,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { StepStatusBadge } from "@/components/ui/step-status-badge";
+import { RetryButton } from "@/components/ui/retry-button";
 import { getJobDetail } from "@/lib/queries";
 import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
 
@@ -53,11 +54,14 @@ export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]
 
       {job.error && (
         <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-5 dark:border-red-900/50 dark:bg-red-950/30">
-          <h2 className="text-sm font-semibold text-red-900 dark:text-red-200">
-            Failed
-            {job.error.stage ? ` — ${job.error.stage}` : ""}
-            {job.error.step ? ` (${job.error.step})` : ""}
-          </h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-red-900 dark:text-red-200">
+              Failed
+              {job.error.stage ? ` — ${job.error.stage}` : ""}
+              {job.error.step ? ` (${job.error.step})` : ""}
+            </h2>
+            <RetryButton externalId={job.externalId} />
+          </div>
           <p className="mt-1 text-sm text-red-800 dark:text-red-300">{job.error.message}</p>
           {job.error.code && (
             <p className="mt-1 font-mono text-xs text-red-600 dark:text-red-400">

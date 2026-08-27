@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { RetryButton } from "@/components/ui/retry-button";
 import { getRecentJobs } from "@/lib/queries";
 import { getEnvironmentFilter } from "@/lib/environment";
 import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
@@ -28,6 +29,7 @@ export default async function JobsPage() {
               <th className="px-4 py-2 text-right font-medium">RunPod</th>
               <th className="px-4 py-2 text-right font-medium">Anthropic</th>
               <th className="px-4 py-2 text-right font-medium">Total</th>
+              <th className="px-4 py-2 font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -73,6 +75,9 @@ export default async function JobsPage() {
                 </td>
                 <td className="px-4 py-2 text-right font-medium text-zinc-900 dark:text-zinc-50">
                   {formatCost(job.costUsd)}
+                </td>
+                <td className="px-4 py-2">
+                  {job.status === "FAILED" && <RetryButton externalId={job.externalId} />}
                 </td>
               </tr>
             ))}
