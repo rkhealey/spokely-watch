@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { StatCard } from "@/components/ui/stat-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EnvironmentBadge } from "@/components/ui/environment-badge";
+import { StepStatusBadge } from "@/components/ui/step-status-badge";
 import { getJobDetail } from "@/lib/queries";
 import { formatCost, formatDateTime, formatDuration } from "@/lib/format";
 
@@ -53,7 +54,9 @@ export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]
       {job.error && (
         <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-5 dark:border-red-900/50 dark:bg-red-950/30">
           <h2 className="text-sm font-semibold text-red-900 dark:text-red-200">
-            Failed{job.error.stage ? ` — ${job.error.stage}` : ""}
+            Failed
+            {job.error.stage ? ` — ${job.error.stage}` : ""}
+            {job.error.step ? ` (${job.error.step})` : ""}
           </h2>
           <p className="mt-1 text-sm text-red-800 dark:text-red-300">{job.error.message}</p>
           {job.error.code && (
@@ -61,6 +64,38 @@ export default async function JobDetailPage(props: PageProps<"/jobs/[externalId]
               {job.error.code}
             </p>
           )}
+        </div>
+      )}
+
+      {job.steps.length > 0 && (
+        <div className="mt-6 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Pipeline steps</h2>
+          <table className="mt-3 w-full text-sm">
+            <thead>
+              <tr className="text-left text-zinc-500 dark:text-zinc-400">
+                <th className="pb-1 font-medium">Step</th>
+                <th className="pb-1 font-medium">Status</th>
+                <th className="pb-1 font-medium">Duration</th>
+                <th className="pb-1 text-right font-medium">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {job.steps.map((step) => (
+                <tr key={step.step} className="border-t border-zinc-100 dark:border-zinc-800">
+                  <td className="py-1.5 text-zinc-900 dark:text-zinc-50">{step.step}</td>
+                  <td className="py-1.5">
+                    <StepStatusBadge status={step.status} />
+                  </td>
+                  <td className="py-1.5 text-zinc-600 dark:text-zinc-400">
+                    {step.durationMs != null ? formatDuration(step.durationMs / 1000) : "—"}
+                  </td>
+                  <td className="py-1.5 text-right text-zinc-900 dark:text-zinc-50">
+                    {formatCost(step.costUsd)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

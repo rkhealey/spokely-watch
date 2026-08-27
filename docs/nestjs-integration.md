@@ -12,10 +12,19 @@ failure — to `POST {SPOKELY_WATCH_URL}/api/ingest/jobs`. Spokely Watch compute
 costs from the raw metrics you send (execution time, token counts) using its
 own pricing table, so your pipeline never needs to know GPU or token pricing.
 
-The call is designed to be **safe to retry and safe to ignore**: resending the
-same `externalId` fully replaces that job's stored data (not a merge), and a
-failed report never throws — it logs and moves on. A dashboard outage should
-never take down the transcription pipeline.
+Optionally, it can also push **one event per pipeline step transition**
+(started, then succeeded/failed) to `POST {SPOKELY_WATCH_URL}/api/ingest/jobs/steps`,
+so the dashboard shows which step a job is currently on before the job
+finishes, and how long each step took afterward. This is additive — the
+final `reportJob` call still happens exactly as before and is what marks the
+job SUCCEEDED/FAILED.
+
+Both calls are designed to be **safe to retry and safe to ignore**: resending
+the same `externalId` to `/jobs` fully replaces that job's stored data (not a
+merge); resending the same `externalId`+`step` to `/jobs/steps` updates that
+step's row in place (also not a merge — later events overwrite the status/
+timestamp). Neither ever throws — a failed report logs and moves on. A
+dashboard outage should never take down the transcription pipeline.
 
 ## Setup
 
@@ -47,6 +56,9 @@ export interface RunpodUsagePayload {
 }
 
 export interface AnthropicUsagePayload {
+  /** Which pipeline step this call belongs to, e.g. "anthropic_summarize" —
+   * mirrors RunpodUsagePayload.task. A step can make more than one call. */
+  step?: string;
   /** Must match a key in Spokely Watch's lib/pricing.ts, e.g. "claude-sonnet-5". */
   model: string;
   inputTokens: number;
@@ -60,6 +72,27 @@ export interface JobErrorPayload {
   message: string;
   /** e.g. "runpod" | "anthropic" | "pipeline" */
   stage?: string;
+  /** The specific step running when this failure happened, e.g. "diarize" —
+   * finer-grained than `stage`. Set this even if you also sent a step
+   * FAILED event; a hard crash may skip that event entirely. */
+  step?: string;
+}
+
+export interface StepReportPayload {
+  /** Your pipeline's episode/job ID — same value as JobReportPayload.externalId. */
+  externalId: string;
+  /** Step name, e.g. "transcribe" / "diarize" / "anthropic_summarize". Use
+   * the same name consistently — it's matched against RunpodUsagePayload.task
+   * and AnthropicUsagePayload.step to attribute cost to this step. */
+  step: string;
+  status: "STARTED" | "SUCCEEDED" | "FAILED";
+  /** When this transition happened. Defaults to server receipt time if omitted. */
+  at?: string; // ISO 8601
+  /** Only needed on the very first event for a given externalId, in case it
+   * arrives before the job exists yet — same fields as JobReportPayload. */
+  showId?: string;
+  showName?: string;
+  environment?: "PRODUCTION" | "DEVELOPMENT";
 }
 
 export interface JobReportPayload {
@@ -86,7 +119,7 @@ export interface JobReportPayload {
 
 ```typescript
 import { Injectable, Logger } from "@nestjs/common";
-import { JobReportPayload } from "./metrics.types";
+import { JobReportPayload, StepReportPayload } from "./metrics.types";
 
 // SPOKELY_WATCH_URL is easy to paste without a scheme (e.g. copied from a
 // browser address bar as "spokely-watch.vercel.app"). fetch() requires an
@@ -132,6 +165,29 @@ export class SpokelyWatchService {
       this.logger.error(`Spokely Watch ingest request failed: ${err}`);
     }
   }
+
+  /** Same fire-and-forget contract as reportJob — never throws. */
+  async reportStep(payload: StepReportPayload): Promise<void> {
+    if (!this.baseUrl || !this.apiKey) return;
+
+    try {
+      const res = await fetch(`${this.baseUrl}/api/ingest/jobs/steps`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        this.logger.error(`Spokely Watch step ingest failed (${res.status}): ${body}`);
+      }
+    } catch (err) {
+      this.logger.error(`Spokely Watch step ingest request failed: ${err}`);
+    }
+  }
 }
 ```
 
@@ -152,8 +208,9 @@ export class AnthropicUsageCollector {
   private readonly entries: AnthropicUsagePayload[] = [];
 
   /** Call this right after every `anthropic.messages.create(...)` response. */
-  record(model: string, usage: Anthropic.Usage): void {
+  record(step: string, model: string, usage: Anthropic.Usage): void {
     this.entries.push({
+      step,
       model,
       inputTokens: usage.input_tokens,
       outputTokens: usage.output_tokens,
@@ -172,33 +229,47 @@ export class AnthropicUsageCollector {
 
 This is pseudocode — replace `runRunpodContainer(...)` and the Claude call
 loop with your actual pipeline code. The parts that matter are: capture
-`startedAt`/`completedAt`, collect Anthropic usage as you go, and call
-`reportJob` once at the end (success path) or in the catch block (failure
-path).
+`startedAt`/`completedAt`, collect Anthropic usage as you go, call
+`reportStep` around each stage transition, and call `reportJob` once at the
+end (success path) or in the catch block (failure path).
 
 ```typescript
 async function processEpisode(episodeId: string, show: { id: string; name: string }) {
   const startedAt = new Date();
   const anthropicUsage = new AnthropicUsageCollector();
+  let currentStep = "transcribe";
 
   try {
     const audioDurationSec = await getAudioDurationSec(episodeId);
 
-    // Two RunPod containers running in parallel on the same episode.
+    // Two RunPod containers running in parallel on the same episode — each
+    // gets its own step so the dashboard shows them as separate rows.
+    await Promise.all([
+      spokelyWatch.reportStep({ externalId: episodeId, step: "transcribe", status: "STARTED" }),
+      spokelyWatch.reportStep({ externalId: episodeId, step: "diarize", status: "STARTED" }),
+    ]);
     const [transcribeResult, diarizeResult] = await Promise.all([
       runRunpodContainer("transcribe", episodeId),
       runRunpodContainer("diarize", episodeId),
     ]);
+    await Promise.all([
+      spokelyWatch.reportStep({ externalId: episodeId, step: "transcribe", status: "SUCCEEDED" }),
+      spokelyWatch.reportStep({ externalId: episodeId, step: "diarize", status: "SUCCEEDED" }),
+    ]);
 
-    // One or more Claude calls — record usage after each.
+    currentStep = "anthropic_summarize";
+    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "STARTED" });
+
+    // One or more Claude calls — record usage after each, tagged with the step.
     for (const chapter of await getChapters(episodeId)) {
       const response = await anthropic.messages.create({
         model: "claude-sonnet-5",
         max_tokens: 4096,
         messages: [{ role: "user", content: buildPrompt(chapter) }],
       });
-      anthropicUsage.record("claude-sonnet-5", response.usage);
+      anthropicUsage.record(currentStep, "claude-sonnet-5", response.usage);
     }
+    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "SUCCEEDED" });
 
     await spokelyWatch.reportJob({
       externalId: episodeId,
@@ -227,6 +298,7 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       anthropic: anthropicUsage.all,
     });
   } catch (err) {
+    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "FAILED" });
     await spokelyWatch.reportJob({
       externalId: episodeId,
       showId: show.id,
@@ -238,6 +310,7 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       error: {
         message: err instanceof Error ? err.message : String(err),
         stage: classifyFailureStage(err), // "runpod" | "anthropic" | "pipeline"
+        step: currentStep,
       },
     });
     throw err;
@@ -247,6 +320,17 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
 
 ## Important notes
 
+- **`reportStep` is optional but cheap to add incrementally.** If you only
+  wire up a couple of steps at first, the dashboard just shows cost/duration
+  for those and "—" for the rest — nothing breaks. Use the same `step` name
+  consistently across `reportStep`, `RunpodUsagePayload.task`, and
+  `AnthropicUsagePayload.step` so the dashboard can attribute cost to it.
+- **A step event can arrive before the job exists** (e.g. the very first
+  `STARTED` event for a new episode) — that's fine, it creates the job with
+  status `PROCESSING`. But a step event arriving *after* the final `reportJob`
+  call never changes the job's status — `/jobs/steps` only sets status on
+  create, so a late/duplicate step event can't regress a finished job back
+  to `PROCESSING`.
 - **Set `environment: "DEVELOPMENT"` when running the pipeline locally or
   against test data.** The dashboard defaults to showing production jobs
   only, so unmarked local/test runs will look like real production traffic —
@@ -309,3 +393,21 @@ curl -X POST http://localhost:3000/api/ingest/jobs \
 A `200` response returns `{"id": "...", "externalId": "test_job_1"}`. A `400`
 means either the payload failed validation or `gpuType`/`model` isn't in the
 pricing table — check the error message.
+
+To test a step event (this one also creates the job, since `test_job_2`
+doesn't exist yet):
+
+```bash
+curl -X POST http://localhost:3000/api/ingest/jobs/steps \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $SPOKELY_WATCH_INGEST_API_KEY" \
+  -d '{
+    "externalId": "test_job_2",
+    "showId": "show_123",
+    "environment": "DEVELOPMENT",
+    "step": "transcribe",
+    "status": "STARTED"
+  }'
+```
+
+A `200` response returns `{"id": "...", "step": "transcribe", "status": "STARTED"}`.

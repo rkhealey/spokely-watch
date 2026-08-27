@@ -2,10 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { computeAnthropicCostUsd, computeRunpodCostUsd, UnknownPricingKeyError } from "@/lib/pricing";
-
-const isoDateString = z.string().refine((value) => !Number.isNaN(Date.parse(value)), {
-  message: "Must be a valid ISO 8601 date string",
-});
+import { isoDateString } from "@/lib/zod-helpers";
 
 const runpodUsageSchema = z.object({
   // Which container this run was, e.g. "transcribe" / "diarize" — a job can
@@ -18,6 +15,9 @@ const runpodUsageSchema = z.object({
 });
 
 const anthropicUsageSchema = z.object({
+  // Which pipeline step this call belongs to, e.g. "anthropic_summarize" —
+  // mirrors RunpodUsagePayload.task. A step can make more than one call.
+  step: z.string().optional(),
   model: z.string(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
@@ -29,6 +29,10 @@ const errorSchema = z.object({
   code: z.string().optional(),
   message: z.string().min(1),
   stage: z.string().optional(),
+  // The specific pipeline step running when this failure happened, e.g.
+  // "diarize" — finer-grained than `stage`. Independent of any step-level
+  // event sent to /api/ingest/jobs/steps, since a hard crash may skip that.
+  step: z.string().optional(),
 });
 
 const jobIngestSchema = z
@@ -159,6 +163,7 @@ export async function POST(request: NextRequest) {
       await tx.anthropicUsage.createMany({
         data: anthropicWithCost.map((usage) => ({
           jobId: job.id,
+          step: usage.step,
           model: usage.model,
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
@@ -171,7 +176,13 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       await tx.jobError.create({
-        data: { jobId: job.id, code: error.code, message: error.message, stage: error.stage },
+        data: {
+          jobId: job.id,
+          code: error.code,
+          message: error.message,
+          stage: error.stage,
+          step: error.step,
+        },
       });
     }
 

@@ -67,6 +67,7 @@ export default async function ErrorsPage() {
                   <th className="px-4 py-2 font-medium">Episode ID</th>
                   <th className="px-4 py-2 font-medium">Date</th>
                   <th className="px-4 py-2 font-medium">Stage</th>
+                  <th className="px-4 py-2 font-medium">Step</th>
                   <th className="px-4 py-2 font-medium">Error</th>
                 </tr>
               </thead>
@@ -89,6 +90,9 @@ export default async function ErrorsPage() {
                     </td>
                     <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
                       {job.stage ?? "—"}
+                    </td>
+                    <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
+                      {job.step ?? "—"}
                     </td>
                     <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">{job.message}</td>
                   </tr>

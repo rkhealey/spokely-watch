@@ -233,7 +233,7 @@ export async function getRecentJobs(environment: Environment, limit = 50) {
 export async function getJobDetail(externalId: string) {
   const job = await db.job.findUnique({
     where: { externalId },
-    include: { runpodUsage: true, anthropicUsage: true, error: true },
+    include: { runpodUsage: true, anthropicUsage: true, steps: true, error: true },
   });
   if (!job) return null;
 
@@ -259,6 +259,63 @@ export async function getJobDetail(externalId: string) {
     runpodUsageWithColdStart.reduce((sum, u) => sum + u.coldStartCostUsd, 0)
   );
 
+  // Step name is a loose string join, not a foreign key — RunpodUsage.task
+  // and AnthropicUsage.step are matched against JobStep.step by name so cost
+  // can be attributed to a step even though they're reported independently.
+  // Jobs older than step-tracking (or steps with no matching JobStep event
+  // yet) still show up here with cost but no status/duration.
+  const stepBreakdown = new Map<
+    string,
+    {
+      step: string;
+      status: (typeof job.steps)[number]["status"] | null;
+      startedAt: Date | null;
+      completedAt: Date | null;
+      runpodCostUsd: number;
+      anthropicCostUsd: number;
+    }
+  >();
+  function stepBucket(step: string) {
+    let bucket = stepBreakdown.get(step);
+    if (!bucket) {
+      bucket = { step, status: null, startedAt: null, completedAt: null, runpodCostUsd: 0, anthropicCostUsd: 0 };
+      stepBreakdown.set(step, bucket);
+    }
+    return bucket;
+  }
+  for (const s of job.steps) {
+    const bucket = stepBucket(s.step);
+    bucket.status = s.status;
+    bucket.startedAt = s.startedAt;
+    bucket.completedAt = s.completedAt;
+  }
+  for (const u of job.runpodUsage) {
+    if (!u.task) continue;
+    stepBucket(u.task).runpodCostUsd += u.costUsd.toNumber();
+  }
+  for (const u of job.anthropicUsage) {
+    if (!u.step) continue;
+    stepBucket(u.step).anthropicCostUsd += u.costUsd.toNumber();
+  }
+
+  const steps = Array.from(stepBreakdown.values())
+    // Chronological, so the table reads as a timeline — steps with no
+    // JobStep event (cost-only, e.g. pre-step-tracking jobs) sort last.
+    .sort((a, b) => {
+      if (a.startedAt && b.startedAt) return a.startedAt.getTime() - b.startedAt.getTime();
+      if (a.startedAt) return -1;
+      if (b.startedAt) return 1;
+      return a.step < b.step ? -1 : a.step > b.step ? 1 : 0;
+    })
+    .map((s) => ({
+      step: s.step,
+      status: s.status,
+      durationMs: s.startedAt && s.completedAt ? s.completedAt.getTime() - s.startedAt.getTime() : null,
+      runpodCostUsd: round4(s.runpodCostUsd),
+      anthropicCostUsd: round4(s.anthropicCostUsd),
+      costUsd: round4(s.runpodCostUsd + s.anthropicCostUsd),
+    }));
+
   return {
     externalId: job.externalId,
     showId: job.showId,
@@ -277,6 +334,7 @@ export async function getJobDetail(externalId: string) {
     coldStartCostUsd,
     runpodUsage: runpodUsageWithColdStart,
     anthropicUsage: job.anthropicUsage.map((u) => ({ ...u, costUsd: u.costUsd.toNumber() })),
+    steps,
     error: job.error,
   };
 }
@@ -463,6 +521,7 @@ export async function getRecentFailedJobs(environment: Environment, limit = 20) 
     externalId: job.externalId,
     createdAt: job.createdAt,
     stage: job.error?.stage ?? null,
+    step: job.error?.step ?? null,
     code: job.error?.code ?? null,
     message: job.error?.message ?? "Unknown error",
   }));

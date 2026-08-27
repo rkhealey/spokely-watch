@@ -19,6 +19,12 @@ enum Environment {
   DEVELOPMENT
 }
 
+enum StepStatus {
+  STARTED
+  SUCCEEDED
+  FAILED
+}
+
 model Job {
   id               String      @id @default(cuid())
   externalId       String      @unique
@@ -39,12 +45,33 @@ model Job {
 
   runpodUsage    RunpodUsage[]
   anthropicUsage AnthropicUsage[]
+  steps          JobStep[]
   error          JobError?
 
   @@index([createdAt])
   @@index([status])
   @@index([showId])
   @@index([environment])
+}
+
+// One row per pipeline step, upserted in place as the step progresses
+// (STARTED -> SUCCEEDED/FAILED) rather than appended — unlike RunpodUsage/
+// AnthropicUsage, a step is a single unit of work, not a log of calls.
+// `step` is a free-text name matched against RunpodUsage.task and
+// AnthropicUsage.step so cost can be joined in by name in the dashboard.
+model JobStep {
+  id          String     @id @default(cuid())
+  jobId       String
+  job         Job        @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  step        String
+  status      StepStatus
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([jobId, step])
+  @@index([jobId])
 }
 
 model RunpodUsage {
@@ -68,6 +95,9 @@ model AnthropicUsage {
   id                  String   @id @default(cuid())
   jobId               String
   job                 Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  // Which pipeline step this call belongs to, e.g. "anthropic_summarize" —
+  // mirrors RunpodUsage.task. A step can make more than one Claude call.
+  step                String?
   model               String
   inputTokens         Int
   outputTokens        Int
@@ -86,5 +116,9 @@ model JobError {
   code      String?
   message   String
   stage     String?
+  // Specific pipeline step running when the job failed, e.g. "diarize" —
+  // finer-grained than `stage`. Set independently of any JobStep row, since
+  // a hard crash may skip reporting a step-level failure event entirely.
+  step      String?
   createdAt DateTime @default(now())
 }
