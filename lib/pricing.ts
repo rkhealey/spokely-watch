@@ -9,6 +9,7 @@
 // (Console → Serverless → your endpoint → Edit Endpoint → GPU selection).
 export const RUNPOD_GPU_RATE_PER_HOUR: Record<string, number> = {
   "24GB": 0.69,
+  "48GB": 1.22
 };
 
 export const ANTHROPIC_RATE_PER_MTOK: Record<
