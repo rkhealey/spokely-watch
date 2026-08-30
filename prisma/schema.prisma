@@ -10,6 +10,10 @@ datasource db {
 enum JobStatus {
   QUEUED
   PROCESSING
+  // Checkpoint: transcription finished and the episode isn't necessarily
+  // going any further right now — it may be picked up for full processing
+  // immediately, much later, or never. Not a failure and not final.
+  TRANSCRIBED
   SUCCEEDED
   FAILED
 }
@@ -74,12 +78,19 @@ model JobStep {
   @@index([jobId])
 }
 
+// One row per (job, task), upserted in place — not deleted and recreated on
+// every /api/ingest/jobs call. This is what lets a checkpoint's cost (e.g.
+// transcription) survive a later completion report that only carries the
+// steps that ran since: the pipeline never has to remember or resend cost
+// for a step it isn't reporting on this call.
 model RunpodUsage {
   id          String   @id @default(cuid())
   jobId       String
   job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  // Which container this run was, e.g. "transcribe" / "diarize" — a job can
-  // have multiple RunPod containers running in parallel on the same episode.
+  // Which container this run was, e.g. "transcription" / "diarization" — a
+  // job can have multiple RunPod containers running in parallel. Nullable
+  // only for rows written before this field was required; always required
+  // on new writes so the (jobId, task) upsert key is reliable.
   task        String?
   endpointId  String?
   gpuType     String
@@ -88,15 +99,20 @@ model RunpodUsage {
   costUsd     Decimal  @db.Decimal(10, 4)
   createdAt   DateTime @default(now())
 
+  @@unique([jobId, task])
   @@index([jobId])
 }
 
+// Same upsert-in-place contract as RunpodUsage, keyed by (jobId, step). A
+// step's multiple Claude calls must be pre-aggregated into one row before
+// sending, since only one row per step can exist.
 model AnthropicUsage {
   id                  String   @id @default(cuid())
   jobId               String
   job                 Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  // Which pipeline step this call belongs to, e.g. "anthropic_summarize" —
-  // mirrors RunpodUsage.task. A step can make more than one Claude call.
+  // Which pipeline step this call belongs to, e.g. "llm" — mirrors
+  // RunpodUsage.task. Nullable only for pre-existing rows; always required
+  // on new writes.
   step                String?
   model               String
   inputTokens         Int
@@ -106,6 +122,7 @@ model AnthropicUsage {
   costUsd             Decimal  @db.Decimal(10, 4)
   createdAt           DateTime @default(now())
 
+  @@unique([jobId, step])
   @@index([jobId])
 }
 

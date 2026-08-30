@@ -19,12 +19,26 @@ finishes, and how long each step took afterward. This is additive — the
 final `reportJob` call still happens exactly as before and is what marks the
 job SUCCEEDED/FAILED.
 
-Both calls are designed to be **safe to retry and safe to ignore**: resending
-the same `externalId` to `/jobs` fully replaces that job's stored data (not a
-merge); resending the same `externalId`+`step` to `/jobs/steps` updates that
-step's row in place (also not a merge — later events overwrite the status/
-timestamp). Neither ever throws — a failed report logs and moves on. A
-dashboard outage should never take down the transcription pipeline.
+Both calls are designed to be **safe to retry and safe to ignore**. On `/jobs`,
+`status`/`audioDurationSec`/timestamps/`error` are fully replaced by each
+call, but `runpod`/`anthropic` cost entries are upserted per `(externalId, task/step)`
+— not deleted and recreated — so a later call only needs to include the steps
+it's actually reporting cost for; steps reported earlier and not mentioned
+in a later call keep their stored cost. On `/jobs/steps`, resending
+the same `externalId`+`step` updates that step's row in place the same way.
+Neither endpoint ever throws — a failed report logs and moves on. A dashboard
+outage should never take down the transcription pipeline.
+
+**Jobs can now end at a checkpoint instead of always running to full
+completion.** `status: "TRANSCRIBED"` marks a job whose transcription step
+finished but which may or may not get picked up for further processing —
+immediately, much later, or never. It's not a failure and not final: send it
+with whatever `runpod` cost the transcription step incurred, same shape as a
+`SUCCEEDED`/`FAILED` report. If the episode is later picked up and fully
+processed, send a normal `reportJob({ status: "SUCCEEDED", ... })` when it
+finishes — you only need to include the *new* `runpod`/`anthropic` cost
+(diarization, llm, etc.); the transcription cost already stored from the
+`TRANSCRIBED` call stays, per the upsert behavior above.
 
 ## Setup
 
@@ -59,9 +73,11 @@ export type PipelineStep =
   | "persist";
 
 export interface RunpodUsagePayload {
-  /** Which pipeline step this container run belongs to — a job can have
-   * multiple RunPod containers running in parallel on one episode. */
-  task?: PipelineStep;
+  /** Which pipeline step this container run belongs to — required, since
+   * Spokely Watch upserts this entry by (externalId, task) rather than
+   * appending it. A job can have multiple RunPod containers running in
+   * parallel on one episode. */
+  task: PipelineStep;
   endpointId?: string;
   /** Must match a key in Spokely Watch's lib/pricing.ts (currently "24GB"). */
   gpuType: string;
@@ -70,9 +86,11 @@ export interface RunpodUsagePayload {
 }
 
 export interface AnthropicUsagePayload {
-  /** Which pipeline step this call belongs to — mirrors RunpodUsagePayload.task.
-   * A step can make more than one call. */
-  step?: PipelineStep;
+  /** Which pipeline step this call belongs to — mirrors RunpodUsagePayload.task,
+   * required for the same upsert-by-step reason. If a step makes more than
+   * one Claude call, pre-aggregate them into a single entry before sending —
+   * only one entry per step is stored. */
+  step: PipelineStep;
   /** Must match a key in Spokely Watch's lib/pricing.ts, e.g. "claude-sonnet-5". */
   model: string;
   inputTokens: number;
@@ -115,7 +133,8 @@ export interface JobReportPayload {
   showName?: string;
   /** Defaults to "PRODUCTION" if omitted — set to "DEVELOPMENT" for local/test runs so they don't pollute production metrics. */
   environment?: "PRODUCTION" | "DEVELOPMENT";
-  status: "SUCCEEDED" | "FAILED";
+  /** "TRANSCRIBED" is a checkpoint, not final — see "How it works" above. */
+  status: "TRANSCRIBED" | "SUCCEEDED" | "FAILED";
   audioDurationSec?: number;
   startedAt?: string; // ISO 8601
   completedAt?: string; // ISO 8601
@@ -278,6 +297,32 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       spokelyWatch.reportStep({ externalId: episodeId, step: "diarization", status: "SUCCEEDED" }),
     ]);
 
+    // Transcription-only episodes stop here — not every episode goes on to
+    // full analysis, and some that do won't for a long time. This is that
+    // job's real terminal state right now, so it needs its own reportJob
+    // call; reportStep alone leaves the job stuck on PROCESSING forever.
+    if (!(await hasDiarizationFollowUp(episodeId))) {
+      await spokelyWatch.reportJob({
+        externalId: episodeId,
+        showId: show.id,
+        showName: show.name,
+        status: "TRANSCRIBED",
+        audioDurationSec,
+        startedAt: startedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        runpod: [
+          {
+            task: "transcription",
+            gpuType: process.env.RUNPOD_GPU_TYPE!,
+            endpointId: transcribeResult.endpointId,
+            executionMs: transcribeResult.executionTime,
+            delayMs: transcribeResult.delayTime,
+          },
+        ],
+      });
+      return;
+    }
+
     for (const step of ["merge", "load_transcript", "prepare_transcript"] as const) {
       currentStep = step;
       await spokelyWatch.reportStep({ externalId: episodeId, step, status: "STARTED" });
@@ -353,14 +398,58 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
 }
 ```
 
+### Resuming a transcription-only episode later
+
+When a previously-`TRANSCRIBED` episode gets picked up for full processing —
+a day, a month, or a year later — only report the *new* cost. The
+transcription `runpod` entry already stored from the earlier `TRANSCRIBED`
+call is untouched by this call, per the upsert-by-step behavior described
+above:
+
+```typescript
+async function resumeTranscribedEpisode(episodeId: string, show: { id: string; name: string }) {
+  const resumedAt = new Date();
+
+  const diarizeResult = await runRunpodContainer("diarization", episodeId);
+  // ... merge, load_transcript, prepare_transcript, llm, validate, persist ...
+
+  await spokelyWatch.reportJob({
+    externalId: episodeId, // same externalId as the original TRANSCRIBED report
+    showId: show.id,
+    showName: show.name,
+    status: "SUCCEEDED",
+    startedAt: resumedAt.toISOString(),
+    completedAt: new Date().toISOString(),
+    runpod: [
+      {
+        task: "diarization", // no "transcription" entry needed — it's already stored
+        gpuType: process.env.RUNPOD_GPU_TYPE!,
+        endpointId: diarizeResult.endpointId,
+        executionMs: diarizeResult.executionTime,
+        delayMs: diarizeResult.delayTime,
+      },
+    ],
+    anthropic: anthropicUsage.all, // this run's llm cost
+  });
+}
+```
+
 ## Important notes
 
-- **`step` must be one of the nine fixed pipeline step names** —
+- **`step`/`task` must be one of the nine fixed pipeline step names** —
   `download_audio`, `transcription`, `diarization`, `merge`, `load_transcript`,
   `prepare_transcript`, `llm`, `validate`, `persist` (case-sensitive, kept in
   sync with Spokely Watch's `lib/steps.ts`). An unrecognized value gets a
   `400`, on `/jobs/steps` and on `RunpodUsagePayload.task`/
   `AnthropicUsagePayload.step`/`JobErrorPayload.step` in `/jobs`.
+  `RunpodUsagePayload.task` and `AnthropicUsagePayload.step` are **required**
+  (not optional) — Spokely Watch needs them to know which stored entry to
+  upsert.
+- **`TRANSCRIBED` jobs don't count toward "succeeded" stats** (avg cost per
+  job, cost per audio-hour, success rate) — those still key off `SUCCEEDED`
+  only, so a transcription-only job sits alongside `PROCESSING`/`QUEUED` as
+  "not yet in the succeeded bucket" until/unless it's later reported
+  `SUCCEEDED`. Its cost still shows up in total spend regardless of status.
 - **`reportStep` is optional but cheap to add incrementally.** If you only
   wire up a couple of steps at first, the dashboard just shows cost/duration
   for those and "—" for the rest — nothing breaks.
@@ -397,9 +486,10 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
   callback URLs. With today's single fixed `"24GB"` tier this doesn't matter
   (`gpuType` is just the static env var), but it will if you diversify GPU
   tiers on an endpoint later.
-- **Resending a job is safe.** `externalId` is the idempotency key — a retry
-  with the same ID fully replaces the previously stored `runpod`/`anthropic`
-  rows for that job (not a merge), so don't worry about double-counting on retry.
+- **Resending a job is safe.** `externalId` is the idempotency key. A retry
+  that resends the exact same `(task/step, ...)` entries just overwrites them
+  in place — no double-counting. `status`/timestamps/`error` are always
+  fully replaced by the latest call.
 - **Don't let a report failure fail the job.** `reportJob` already swallows
   its own errors; if you inline the fetch yourself instead of using
   `SpokelyWatchService`, keep that behavior.
@@ -424,7 +514,7 @@ curl -X POST http://localhost:3000/api/ingest/jobs \
       { "task": "diarization", "gpuType": "24GB", "executionMs": 54000, "delayMs": 300 }
     ],
     "anthropic": [
-      { "model": "claude-sonnet-5", "inputTokens": 12000, "outputTokens": 900, "cacheReadTokens": 8000 }
+      { "step": "llm", "model": "claude-sonnet-5", "inputTokens": 12000, "outputTokens": 900, "cacheReadTokens": 8000 }
     ]
   }'
 ```

@@ -3,6 +3,9 @@ const STATUS_STYLE = {
   FAILED: { color: "var(--chart-critical)", label: "Failed" },
   QUEUED: { color: "var(--chart-text-muted)", label: "Queued" },
   PROCESSING: { color: "var(--chart-blue)", label: "Processing" },
+  // Checkpoint, not final: transcription finished, full processing may or
+  // may not follow. Distinct color so it doesn't read as "done" like SUCCEEDED.
+  TRANSCRIBED: { color: "var(--chart-orange)", label: "Transcribed" },
 } as const;
 
 export function StatusBadge({ status }: { status: keyof typeof STATUS_STYLE }) {

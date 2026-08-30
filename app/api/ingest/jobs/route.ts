@@ -6,9 +6,11 @@ import { isoDateString } from "@/lib/zod-helpers";
 import { PIPELINE_STEPS } from "@/lib/steps";
 
 const runpodUsageSchema = z.object({
-  // Which pipeline step this container run belongs to — a job can have
-  // multiple RunPod containers running in parallel on the same episode.
-  task: z.enum(PIPELINE_STEPS).optional(),
+  // Which pipeline step this container run belongs to — required so this
+  // entry can be upserted by (job, task) instead of replacing all of a
+  // job's RunPod rows on every call. A job can have multiple RunPod
+  // containers running in parallel on the same episode.
+  task: z.enum(PIPELINE_STEPS),
   endpointId: z.string().optional(),
   gpuType: z.string(),
   executionMs: z.number().int().nonnegative(),
@@ -16,9 +18,11 @@ const runpodUsageSchema = z.object({
 });
 
 const anthropicUsageSchema = z.object({
-  // Which pipeline step this call belongs to — mirrors RunpodUsagePayload.task.
-  // A step can make more than one call.
-  step: z.enum(PIPELINE_STEPS).optional(),
+  // Which pipeline step this call belongs to — mirrors RunpodUsagePayload.task,
+  // required for the same (job, step) upsert reason. If a step makes more
+  // than one Claude call, pre-aggregate them into a single entry before
+  // sending — only one row per step can exist.
+  step: z.enum(PIPELINE_STEPS),
   model: z.string(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),
@@ -44,7 +48,10 @@ const jobIngestSchema = z
     // Omitted defaults to PRODUCTION — a pipeline that hasn't been updated
     // to send this yet is real traffic, not a dev/test run.
     environment: z.enum(["PRODUCTION", "DEVELOPMENT"]).default("PRODUCTION"),
-    status: z.enum(["SUCCEEDED", "FAILED"]),
+    // TRANSCRIBED is a checkpoint, not final: transcription finished but the
+    // episode may or may not go any further. Not a failure, so no `error`
+    // is required for it, same as SUCCEEDED.
+    status: z.enum(["TRANSCRIBED", "SUCCEEDED", "FAILED"]),
     audioDurationSec: z.number().nonnegative().optional(),
     startedAt: isoDateString.optional(),
     completedAt: isoDateString.optional(),
@@ -141,14 +148,17 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Idempotent on retries: replace this job's child rows rather than appending.
+    // JobError is always a single row reflecting the latest failure, so it's
+    // still full-replace. RunpodUsage/AnthropicUsage are upserted per entry
+    // below instead — a job reported at a checkpoint (e.g. TRANSCRIBED) and
+    // later completed shouldn't lose the cost from steps this call doesn't
+    // mention.
     await tx.jobError.deleteMany({ where: { jobId: job.id } });
-    await tx.anthropicUsage.deleteMany({ where: { jobId: job.id } });
-    await tx.runpodUsage.deleteMany({ where: { jobId: job.id } });
 
-    if (runpodWithCost.length > 0) {
-      await tx.runpodUsage.createMany({
-        data: runpodWithCost.map((usage) => ({
+    for (const usage of runpodWithCost) {
+      await tx.runpodUsage.upsert({
+        where: { jobId_task: { jobId: job.id, task: usage.task } },
+        create: {
           jobId: job.id,
           task: usage.task,
           endpointId: usage.endpointId,
@@ -156,13 +166,21 @@ export async function POST(request: NextRequest) {
           executionMs: usage.executionMs,
           delayMs: usage.delayMs,
           costUsd: usage.costUsd,
-        })),
+        },
+        update: {
+          endpointId: usage.endpointId,
+          gpuType: usage.gpuType,
+          executionMs: usage.executionMs,
+          delayMs: usage.delayMs,
+          costUsd: usage.costUsd,
+        },
       });
     }
 
-    if (anthropicWithCost.length > 0) {
-      await tx.anthropicUsage.createMany({
-        data: anthropicWithCost.map((usage) => ({
+    for (const usage of anthropicWithCost) {
+      await tx.anthropicUsage.upsert({
+        where: { jobId_step: { jobId: job.id, step: usage.step } },
+        create: {
           jobId: job.id,
           step: usage.step,
           model: usage.model,
@@ -171,7 +189,15 @@ export async function POST(request: NextRequest) {
           cacheCreationTokens: usage.cacheCreationTokens,
           cacheReadTokens: usage.cacheReadTokens,
           costUsd: usage.costUsd,
-        })),
+        },
+        update: {
+          model: usage.model,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheCreationTokens: usage.cacheCreationTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          costUsd: usage.costUsd,
+        },
       });
     }
 
