@@ -61,16 +61,12 @@ you generate on this side.
 // Must match Spokely Watch's lib/steps.ts exactly (case-sensitive) — used
 // for RunpodUsagePayload.task, AnthropicUsagePayload.step, JobErrorPayload.step,
 // and StepReportPayload.step. An unrecognized value gets a 400.
-export type PipelineStep =
-  | "download_audio"
-  | "transcription"
-  | "diarization"
-  | "merge"
-  | "load_transcript"
-  | "prepare_transcript"
-  | "llm"
-  | "validate"
-  | "persist";
+//
+// Deliberately limited to the three steps that incur cost — the rest of the
+// pipeline (download_audio, merge, load_transcript, prepare_transcript,
+// validate, persist) still runs, it's just not reported here. Don't call
+// reportStep for those; each tracked step is two extra ingest calls per job.
+export type PipelineStep = "transcription" | "diarization" | "llm";
 
 export interface RunpodUsagePayload {
   /** Which pipeline step this container run belongs to — required, since
@@ -257,33 +253,34 @@ export class AnthropicUsageCollector {
 
 ## Wiring it into your job handler
 
-This is pseudocode — replace `runRunpodContainer(...)` and the Claude call
-loop with your actual pipeline code. The parts that matter are: capture
-`startedAt`/`completedAt`, collect Anthropic usage as you go, call
-`reportStep` around each stage transition, and call `reportJob` once at the
-end (success path) or in the catch block (failure path).
+This is pseudocode — replace `runRunpodContainer(...)`, `runPipelineStep(...)`,
+and the Claude call loop with your actual pipeline code. The parts that
+matter are: capture `startedAt`/`completedAt`, collect Anthropic usage as you
+go, call `reportStep` only around `transcription`/`diarization`/`llm`, and
+call `reportJob` once at the end (success path) or in the catch block
+(failure path).
 
-The full pipeline has nine steps (`download_audio`, `transcription`,
-`diarization`, `merge`, `load_transcript`, `prepare_transcript`, `llm`,
-`validate`, `persist`) — only `transcription`/`diarization` (RunPod) and
-`llm` (Anthropic) carry cost data on the final `reportJob` call. The rest are
-plain `reportStep` calls with no attached cost, shown below as `runPipelineStep`
-for brevity; wire each one up the same way as `download_audio`.
+The rest of the pipeline (`download_audio`, `merge`, `load_transcript`,
+`prepare_transcript`, `validate`, `persist`) still runs — it's just not
+reported to Spokely Watch, so those calls to `runPipelineStep` below have no
+corresponding `reportStep`/cost data.
 
 ```typescript
 async function processEpisode(episodeId: string, show: { id: string; name: string }) {
   const startedAt = new Date();
   const anthropicUsage = new AnthropicUsageCollector();
-  let currentStep: PipelineStep = "download_audio";
+  // undefined outside the three tracked windows (transcription+diarization,
+  // then llm) — a failure during an untracked step (download_audio, merge,
+  // etc.) has no PipelineStep value to report, so it's left out of
+  // error.step and no reportStep FAILED call is made for it.
+  let currentStep: PipelineStep | undefined;
 
   try {
-    // Cost-less steps just wrap the work in a STARTED/SUCCEEDED pair.
-    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "STARTED" });
-    const audioDurationSec = await runPipelineStep(currentStep, episodeId);
-    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "SUCCEEDED" });
+    const audioDurationSec = await runPipelineStep("download_audio", episodeId);
 
     // Two RunPod containers running in parallel on the same episode — each
     // gets its own step so the dashboard shows them as separate rows.
+    currentStep = "transcription";
     await Promise.all([
       spokelyWatch.reportStep({ externalId: episodeId, step: "transcription", status: "STARTED" }),
       spokelyWatch.reportStep({ externalId: episodeId, step: "diarization", status: "STARTED" }),
@@ -296,6 +293,7 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       spokelyWatch.reportStep({ externalId: episodeId, step: "transcription", status: "SUCCEEDED" }),
       spokelyWatch.reportStep({ externalId: episodeId, step: "diarization", status: "SUCCEEDED" }),
     ]);
+    currentStep = undefined;
 
     // Transcription-only episodes stop here — not every episode goes on to
     // full analysis, and some that do won't for a long time. This is that
@@ -323,12 +321,9 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       return;
     }
 
-    for (const step of ["merge", "load_transcript", "prepare_transcript"] as const) {
-      currentStep = step;
-      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "STARTED" });
-      await runPipelineStep(step, episodeId);
-      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "SUCCEEDED" });
-    }
+    await runPipelineStep("merge", episodeId);
+    await runPipelineStep("load_transcript", episodeId);
+    await runPipelineStep("prepare_transcript", episodeId);
 
     currentStep = "llm";
     await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "STARTED" });
@@ -343,13 +338,10 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       anthropicUsage.record(currentStep, "claude-sonnet-5", response.usage);
     }
     await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "SUCCEEDED" });
+    currentStep = undefined;
 
-    for (const step of ["validate", "persist"] as const) {
-      currentStep = step;
-      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "STARTED" });
-      await runPipelineStep(step, episodeId);
-      await spokelyWatch.reportStep({ externalId: episodeId, step, status: "SUCCEEDED" });
-    }
+    await runPipelineStep("validate", episodeId);
+    await runPipelineStep("persist", episodeId);
 
     await spokelyWatch.reportJob({
       externalId: episodeId,
@@ -378,7 +370,9 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       anthropic: anthropicUsage.all,
     });
   } catch (err) {
-    await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "FAILED" });
+    if (currentStep) {
+      await spokelyWatch.reportStep({ externalId: episodeId, step: currentStep, status: "FAILED" });
+    }
     await spokelyWatch.reportJob({
       externalId: episodeId,
       showId: show.id,
@@ -389,8 +383,8 @@ async function processEpisode(episodeId: string, show: { id: string; name: strin
       anthropic: anthropicUsage.all, // whatever was captured before the failure
       error: {
         message: err instanceof Error ? err.message : String(err),
-        stage: classifyFailureStage(err), // "runpod" | "anthropic" | "pipeline"
-        step: currentStep,
+        stage: classifyFailureStage(err), // e.g. "download_audio" | "runpod" | "merge" | "anthropic" | "persist"
+        step: currentStep, // undefined if the failure was outside a tracked step
       },
     });
     throw err;
@@ -436,15 +430,18 @@ async function resumeTranscribedEpisode(episodeId: string, show: { id: string; n
 
 ## Important notes
 
-- **`step`/`task` must be one of the nine fixed pipeline step names** —
-  `download_audio`, `transcription`, `diarization`, `merge`, `load_transcript`,
-  `prepare_transcript`, `llm`, `validate`, `persist` (case-sensitive, kept in
-  sync with Spokely Watch's `lib/steps.ts`). An unrecognized value gets a
-  `400`, on `/jobs/steps` and on `RunpodUsagePayload.task`/
-  `AnthropicUsagePayload.step`/`JobErrorPayload.step` in `/jobs`.
-  `RunpodUsagePayload.task` and `AnthropicUsagePayload.step` are **required**
-  (not optional) — Spokely Watch needs them to know which stored entry to
-  upsert.
+- **`step`/`task` must be one of three fixed names** — `transcription`,
+  `diarization`, `llm` (case-sensitive, kept in sync with Spokely Watch's
+  `lib/steps.ts`). An unrecognized value gets a `400`, on `/jobs/steps` and
+  on `RunpodUsagePayload.task`/`AnthropicUsagePayload.step`/
+  `JobErrorPayload.step` in `/jobs`. `RunpodUsagePayload.task` and
+  `AnthropicUsagePayload.step` are **required** (not optional) — Spokely
+  Watch needs them to know which stored entry to upsert.
+  Deliberately narrow: the rest of the pipeline (`download_audio`, `merge`,
+  `load_transcript`, `prepare_transcript`, `validate`, `persist`) isn't
+  reported here — every tracked step is two more ingest calls per job, and
+  that call volume is what drives connection load against Postgres, so this
+  list only covers the steps that carry cost.
 - **`TRANSCRIBED` jobs don't count toward "succeeded" stats** (avg cost per
   job, cost per audio-hour, success rate) — those still key off `SUCCEEDED`
   only, so a transcription-only job sits alongside `PROCESSING`/`QUEUED` as
